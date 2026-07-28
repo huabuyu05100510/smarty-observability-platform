@@ -9,12 +9,13 @@
  */
 
 import type { MonitorEvent, MonitorEventSubType, ErrorSignal, VitalMetric, InpAttribution, ErrorFingerprint } from '@monit/contracts';
-import { traceContext, generateSpanIdHex, installTracePropagation } from '@monit/trace';
+import { traceContext, generateSpanIdHex } from '@monit/trace';
 import { installVitals } from './vitals';
 import { installErrors, reportReactError } from './errors';
 import { BreadcrumbCollector } from './breadcrumbs';
 import { Reporter, type OfflineStore } from './reporter';
 import { createIdbOfflineStore } from './offline-store';
+import { installRequestMonitor } from './request';
 
 export interface CollectorOptions {
   endpoint: string;
@@ -34,6 +35,8 @@ export interface CollectorOptions {
   offlineStore?: OfflineStore;
   /** gzip 压缩上报（需 pako 可用） */
   compress?: boolean;
+  /** 慢请求阈值 ms（默认 3000，0 关闭） */
+  slowThresholdMs?: number;
 }
 
 export interface CollectorHandle {
@@ -57,7 +60,7 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
   const sessionId = opts.sessionId ?? `sess-${Date.now()}-${sessionIdCounter++}`;
   const sampleRate = opts.sampleRate ?? 1;
 
-  // 1. 配置 trace + 注入 traceparent 出站
+  // 1. 配置 trace（view 级 traceId；request 监控会注入 traceparent）
   traceContext.configure({
     enabled: opts.trace?.enabled ?? true,
     inheritFromMeta: opts.trace?.inheritFromMeta,
@@ -65,7 +68,6 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     traceFlags: '01',
   });
   traceContext.startView();
-  const traceHandle = installTracePropagation();
 
   // 2. reporter（带 IndexedDB 离线队列重试，非阻塞挂载）
   const reporter = new Reporter({
@@ -134,6 +136,16 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     },
   });
 
+  // 请求监控（fetch + XHR，含 traceparent 注入；忽略上报自身）
+  const requestHandle = installRequestMonitor(
+    { slowThresholdMs: opts.slowThresholdMs, ignore: (u) => u === opts.endpoint },
+    {
+      onEvent: (subType, payload) => {
+        reporter.enqueue(makeEvent('request', subType, payload, undefined, payload.failReason ? { failReason: payload.failReason } : undefined));
+      },
+    },
+  );
+
   return {
     report(event) {
       reporter.enqueue(event);
@@ -151,8 +163,8 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     uninstall() {
       uninstallVitals();
       uninstallErrors();
+      requestHandle.uninstall();
       breadcrumbs.uninstall();
-      traceHandle.uninstall();
       reporter.stop();
       traceContext.reset();
     },

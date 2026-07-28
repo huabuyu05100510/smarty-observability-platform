@@ -144,105 +144,6 @@ var TraceContextManager = class {
   }
 };
 var traceContext = new TraceContextManager();
-var DEFAULT_MARK_KEY = "__monit_trace_installed";
-function isSameOrigin(url) {
-  if (typeof location === "undefined")
-    return true;
-  try {
-    return new URL(url, location.href).origin === location.origin;
-  } catch {
-    return false;
-  }
-}
-function resolveSpanContext(url, shouldInject) {
-  if (shouldInject) {
-    if (!shouldInject(url))
-      return null;
-  } else if (!isSameOrigin(url)) {
-    return null;
-  }
-  return traceContext.forRequest();
-}
-function instrumentFetch(opts = {}) {
-  if (typeof globalThis.fetch === "undefined") {
-    return { uninstall() {
-    } };
-  }
-  const markKey = opts.markKey ?? DEFAULT_MARK_KEY;
-  if (globalThis.fetch[markKey])
-    return { uninstall() {
-    } };
-  const original = globalThis.fetch;
-  const patched = async (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    const span = resolveSpanContext(url, opts.shouldInject);
-    if (span) {
-      const headerValue = encodeTraceparent(span);
-      init = init ?? {};
-      init.headers = new Headers(init.headers);
-      if (!init.headers.has(TRACEPARENT_HEADER)) {
-        init.headers.set(TRACEPARENT_HEADER, headerValue);
-      }
-    }
-    return original(input, init);
-  };
-  patched[markKey] = true;
-  globalThis.fetch = patched;
-  return {
-    uninstall() {
-      if (globalThis.fetch === patched) {
-        globalThis.fetch = original;
-      }
-    }
-  };
-}
-function instrumentXhr(opts = {}) {
-  if (typeof XMLHttpRequest === "undefined") {
-    return { uninstall() {
-    } };
-  }
-  const markKey = opts.markKey ?? DEFAULT_MARK_KEY;
-  if (XMLHttpRequest.prototype[markKey])
-    return { uninstall() {
-    } };
-  const originalOpen = XMLHttpRequest.prototype.open;
-  const originalSend = XMLHttpRequest.prototype.send;
-  const openMark = markKey + ":url";
-  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
-    this[openMark] = url;
-    return originalOpen.call(this, method, url, ...rest);
-  };
-  XMLHttpRequest.prototype.send = function(body) {
-    const url = this[openMark];
-    if (url) {
-      const span = resolveSpanContext(url, opts.shouldInject);
-      if (span) {
-        try {
-          this.setRequestHeader(TRACEPARENT_HEADER, encodeTraceparent(span));
-        } catch {
-        }
-      }
-    }
-    return originalSend.call(this, body);
-  };
-  XMLHttpRequest.prototype[markKey] = true;
-  return {
-    uninstall() {
-      XMLHttpRequest.prototype.open = originalOpen;
-      XMLHttpRequest.prototype.send = originalSend;
-    }
-  };
-}
-function installTracePropagation(opts = {}) {
-  const fetchHandle = instrumentFetch(opts);
-  const xhrHandle = instrumentXhr(opts);
-  return {
-    uninstall() {
-      fetchHandle.uninstall();
-      xhrHandle.uninstall();
-    }
-  };
-}
 
 // src/vitals.ts
 function ratingForInp(value) {
@@ -902,6 +803,185 @@ async function createIdbOfflineStore() {
   };
 }
 
+// src/request.ts
+function isSameOrigin(url) {
+  if (typeof location === "undefined")
+    return true;
+  try {
+    return new URL(url, location.href).origin === location.origin;
+  } catch {
+    return false;
+  }
+}
+function extractGraphQL(body) {
+  if (typeof body !== "string")
+    return null;
+  if (!body.includes('"query"') && !body.includes('"operationName"'))
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(parsed) && parsed.length > 0)
+    parsed = parsed[0];
+  if (!parsed || typeof parsed !== "object")
+    return null;
+  const obj = parsed;
+  const query = typeof obj.query === "string" ? obj.query : "";
+  if (!query)
+    return null;
+  const lines = query.split("\n").map((l) => l.replace(/#.*$/, "").trim()).filter(Boolean);
+  const opLine = lines.find((l) => /^(query|mutation|subscription|fragment)\b/i.test(l)) ?? lines[0] ?? "";
+  const summary = opLine.slice(0, 100);
+  const operationName = typeof obj.operationName === "string" && obj.operationName || (summary.match(/^(?:query|mutation|subscription|fragment)\s+([A-Za-z_]\w*)/i)?.[1] ?? "");
+  return { operationName, summary };
+}
+function classifyZeroStatus(response) {
+  if (typeof navigator !== "undefined" && navigator.onLine === false)
+    return "offline";
+  return "network-unknown";
+}
+function installRequestMonitor(opts, cb) {
+  const slowThresholdMs = opts.slowThresholdMs ?? 3e3;
+  const inject = opts.injectTraceparent ?? true;
+  const ignore = opts.ignore ?? (() => false);
+  const cleanups = [];
+  const injectHeader = (url, headers) => {
+    if (!inject || !isSameOrigin(url))
+      return;
+    const span = traceContext.forRequest();
+    if (span && !headers.has(TRACEPARENT_HEADER)) {
+      headers.set(TRACEPARENT_HEADER, encodeTraceparent(span));
+    }
+  };
+  if (typeof globalThis.fetch === "function") {
+    const originalFetch = globalThis.fetch;
+    const mark = `__monit_req_fetch`;
+    if (!originalFetch[mark]) {
+      const patched = async (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (ignore(url))
+          return originalFetch(input, init);
+        const newInit = init ? { ...init } : {};
+        if (inject) {
+          newInit.headers = new Headers(init?.headers);
+          injectHeader(url, newInit.headers);
+        }
+        const requestBody = typeof init?.body === "string" ? init.body.slice(0, 500) : "";
+        const graphql = extractGraphQL(init?.body);
+        const start = Date.now();
+        try {
+          const response = await originalFetch(input, newInit);
+          const duration = Date.now() - start;
+          if (!response.ok) {
+            const cloned = response.clone();
+            const responseText = await cloned.text().catch(() => "");
+            cb.onEvent("fetch", {
+              method,
+              url,
+              status: response.status,
+              duration,
+              requestBody,
+              responseText: responseText.slice(0, 500),
+              ...graphql ? { graphqlOperation: graphql.operationName, graphqlSummary: graphql.summary } : {}
+            });
+          }
+          if (slowThresholdMs > 0 && duration > slowThresholdMs) {
+            cb.onEvent("slow", { method, url, status: response.status, duration, threshold: slowThresholdMs });
+          }
+          return response;
+        } catch (error) {
+          const duration = Date.now() - start;
+          cb.onEvent("fetch", {
+            method,
+            url,
+            status: 0,
+            duration,
+            requestBody,
+            responseText: error instanceof Error ? error.message : String(error),
+            failReason: classifyZeroStatus(),
+            ...graphql ? { graphqlOperation: graphql.operationName, graphqlSummary: graphql.summary } : {}
+          });
+          throw error;
+        }
+      };
+      patched[mark] = true;
+      globalThis.fetch = patched;
+      cleanups.push(() => {
+        if (globalThis.fetch === patched)
+          globalThis.fetch = originalFetch;
+      });
+    }
+  }
+  if (typeof XMLHttpRequest === "function") {
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    const originalSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+    const mark = "__monit_req_xhr";
+    if (!XMLHttpRequest.prototype[mark]) {
+      const urlKey = mark + ":url";
+      const methodKey = mark + ":method";
+      const startKey = mark + ":start";
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        this[urlKey] = url;
+        this[methodKey] = method;
+        return originalOpen.call(this, method, url, ...rest);
+      };
+      XMLHttpRequest.prototype.send = function(body) {
+        const url = this[urlKey] ?? "";
+        const method = (this[methodKey] ?? "GET").toUpperCase();
+        this[startKey] = Date.now();
+        if (!ignore(url)) {
+          this.addEventListener("loadend", () => {
+            const start = this[startKey] ?? Date.now();
+            const duration = Date.now() - start;
+            const status = this.status;
+            if (status === 0 || status >= 400) {
+              cb.onEvent("xhr", { method, url, status, duration, responseText: (this.responseText ?? "").slice(0, 500) });
+            } else if (slowThresholdMs > 0 && duration > slowThresholdMs) {
+              cb.onEvent("slow", { method, url, status, duration, threshold: slowThresholdMs });
+            }
+          });
+        }
+        return originalSend.call(this, body);
+      };
+      XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+        const url = this[urlKey] ?? "";
+        if (inject && isSameOrigin(url) && name.toLowerCase() === TRACEPARENT_HEADER) {
+          this[mark + ":tp"] = true;
+        }
+        return originalSetHeader.call(this, name, value);
+      };
+      const origOpen2 = XMLHttpRequest.prototype.open;
+      XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+        const r = origOpen2.call(this, method, url, ...rest);
+        if (inject && isSameOrigin(url)) {
+          const span = traceContext.forRequest();
+          if (span) {
+            try {
+              originalSetHeader.call(this, TRACEPARENT_HEADER, encodeTraceparent(span));
+            } catch {
+            }
+          }
+        }
+        return r;
+      };
+      XMLHttpRequest.prototype[mark] = true;
+      cleanups.push(() => {
+        XMLHttpRequest.prototype.open = originalOpen;
+        XMLHttpRequest.prototype.send = originalSend;
+        XMLHttpRequest.prototype.setRequestHeader = originalSetHeader;
+      });
+    }
+  }
+  return { uninstall() {
+    cleanups.forEach((fn) => fn());
+  } };
+}
+
 // src/index.ts
 var sessionIdCounter = 0;
 function initCollector(opts) {
@@ -914,7 +994,6 @@ function initCollector(opts) {
     traceFlags: "01"
   });
   traceContext.startView();
-  const traceHandle = installTracePropagation();
   const reporter = new Reporter({
     endpoint: opts.endpoint,
     release: opts.release,
@@ -966,6 +1045,14 @@ function initCollector(opts) {
       reporter.enqueue(event);
     }
   });
+  const requestHandle = installRequestMonitor(
+    { slowThresholdMs: opts.slowThresholdMs, ignore: (u) => u === opts.endpoint },
+    {
+      onEvent: (subType, payload) => {
+        reporter.enqueue(makeEvent("request", subType, payload, void 0, payload.failReason ? { failReason: payload.failReason } : void 0));
+      }
+    }
+  );
   return {
     report(event) {
       reporter.enqueue(event);
@@ -983,8 +1070,8 @@ function initCollector(opts) {
     uninstall() {
       uninstallVitals();
       uninstallErrors();
+      requestHandle.uninstall();
       breadcrumbs.uninstall();
-      traceHandle.uninstall();
       reporter.stop();
       traceContext.reset();
     },

@@ -340,7 +340,8 @@ export type MonitorEventType =
   | 'breadcrumb'
   | 'trace'
   | 'ai'
-  | 'long-task';
+  | 'long-task'
+  | 'request';
 
 export type MonitorEventSubType =
   | 'js'
@@ -353,7 +354,10 @@ export type MonitorEventSubType =
   | 'cls'
   | 'fcp'
   | 'ttfb'
-  | 'loaf';
+  | 'loaf'
+  | 'fetch'
+  | 'xhr'
+  | 'slow';
 
 export interface ErrorFingerprint {
   primary: string; // 栈指纹（FNV-1a + top-3 归一化栈帧）
