@@ -21,6 +21,7 @@
     "@monit/contracts": "workspace:*",
     "@monit/trace": "workspace:*",
     "@monit/fingerprint": "workspace:*",
+    "@monit/pii": "workspace:*",
     "pako": "^2.1.0"
   }
 }

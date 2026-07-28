@@ -16,6 +16,7 @@ import { BreadcrumbCollector } from './breadcrumbs';
 import { Reporter, type OfflineStore } from './reporter';
 import { createIdbOfflineStore } from './offline-store';
 import { installRequestMonitor } from './request';
+import { redactPayload, type RedactOptions } from '@monit/pii';
 
 export interface CollectorOptions {
   endpoint: string;
@@ -37,6 +38,8 @@ export interface CollectorOptions {
   compress?: boolean;
   /** 慢请求阈值 ms（默认 3000，0 关闭） */
   slowThresholdMs?: number;
+  /** PII 脱敏（默认开启；false 关闭，传对象自定义规则） */
+  pii?: RedactOptions | false;
 }
 
 export interface CollectorHandle {
@@ -97,6 +100,9 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     extraTags?: Record<string, string>,
   ): MonitorEvent => {
     const sampled = Math.random() < sampleRate;
+    // PII 脱敏（默认开启；opts.pii=false 关闭，opts.pii={...} 自定义规则）
+    const piiOpts = opts.pii === false ? null : (opts.pii ?? {});
+    const safePayload = piiOpts ? redactPayload(payload, piiOpts) : payload;
     return {
       id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       type,
@@ -106,8 +112,8 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
       spanId: generateSpanIdHex(),
       sessionId,
       release: opts.release ?? 'unknown',
-      payload,
-      piiSafe: true,
+      payload: safePayload,
+      piiSafe: piiOpts !== null,
       sampled,
       sampleRate,
       fingerprint,

@@ -38,6 +38,9 @@ importers:
       '@monit/fingerprint':
         specifier: workspace:*
         version: link:../fingerprint
+      '@monit/pii':
+        specifier: workspace:*
+        version: link:../pii
       '@monit/trace':
         specifier: workspace:*
         version: link:../trace
@@ -124,6 +127,8 @@ importers:
       '@monit/repair-agent':
         specifier: workspace:*
         version: link:../repair-agent
+
+  packages/pii: {}
 
   packages/provenance:
     dependencies:
