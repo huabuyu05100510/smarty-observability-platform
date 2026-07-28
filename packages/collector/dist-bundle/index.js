@@ -628,7 +628,8 @@ var Reporter = class {
       maxAttempts: opts.maxAttempts ?? 5,
       release: opts.release,
       offlineStore: opts.offlineStore,
-      compress: opts.compress
+      compress: opts.compress,
+      sampler: opts.sampler
     };
   }
   start() {
@@ -643,6 +644,10 @@ var Reporter = class {
     void this.flushOffline();
   }
   enqueue(event) {
+    if (this.opts.sampler && !this.opts.sampler.shouldKeep(event)) {
+      event.sampled = false;
+      return;
+    }
     this.queue.push(event);
     if (this.queue.length >= this.opts.batchSize)
       void this.flush();
@@ -1046,6 +1051,154 @@ function installRequestMonitor(opts, cb) {
   } };
 }
 
+// ../pii/dist/index.js
+var DEFAULT_PATTERNS = [
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  /\b(AKIA|ASIA)[0-9A-Z]{16}\b/g,
+  /\bAIza[0-9A-Za-z_-]{35}\b/g,
+  /\bxox[abp]-[0-9A-Za-z-]{10,}\b/g,
+  /\b[sp]k_(test_)?[a-z]+_[0-9A-Za-z]{20,}\b/g,
+  /\bgh[opsu]_[0-9A-Za-z]{36,}\b/g,
+  /\bsk-(ant-)?[A-Za-z0-9_-]{20,}\b/g,
+  /\b1[3-9]\d{9}\b/g,
+  /\b\d{17}[\dXx]\b/g,
+  /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
+];
+function redactPayload(input, opts = {}) {
+  const replacement = opts.replacement ?? "[REDACTED]";
+  const patterns = opts.disableDefaults ? opts.patterns ?? [] : [...DEFAULT_PATTERNS, ...opts.patterns ?? []];
+  const report = { matched: {}, fields: [] };
+  const fieldSet = new Set(opts.fields ?? []);
+  const walk = (value, path) => {
+    if (fieldSet.has(path) || (opts.fieldMatcher?.(path, value) ?? false)) {
+      if (path !== "")
+        report.fields.push({ path, redacted: true });
+      return replacement;
+    }
+    if (typeof value === "string")
+      return redactString(value, patterns, replacement, report);
+    if (Array.isArray(value))
+      return value.map((v, i) => walk(v, `${path}[${i}]`));
+    if (value !== null && typeof value === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) {
+        out[k] = walk(v, path ? `${path}.${k}` : k);
+      }
+      return out;
+    }
+    return value;
+  };
+  return walk(input, "");
+}
+function redactString(s, patterns, replacement, report) {
+  let out = s;
+  for (const re of patterns) {
+    const reCopy = new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`);
+    const matches = out.match(reCopy);
+    if (matches) {
+      report.matched[re.source.slice(0, 30)] = (report.matched[re.source.slice(0, 30)] ?? 0) + matches.length;
+      out = out.replace(reCopy, replacement);
+    }
+  }
+  return out;
+}
+
+// ../sampling/dist/index.js
+function clamp01(n) {
+  return Math.max(0, Math.min(1, n));
+}
+function fnv1a2(s) {
+  let hash = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+function pickHashKey(event, field) {
+  if (field === "message") {
+    const m = event.payload?.message;
+    return typeof m === "string" ? m : null;
+  }
+  const v = event[field];
+  return typeof v === "string" && v ? v : null;
+}
+function isError(event) {
+  return event.type === "error" || event.payload?.status === "error";
+}
+function isSlow(event, thresholdMs) {
+  const d = event.payload?.duration;
+  return typeof d === "number" && d > thresholdMs;
+}
+var HeadSampler = class {
+  sampleRate;
+  hashField;
+  hashFn;
+  constructor(opts = {}) {
+    this.sampleRate = clamp01(opts.sampleRate ?? 1);
+    this.hashField = opts.hashField ?? "traceId";
+    this.hashFn = opts.hashFn ?? fnv1a2;
+  }
+  get effectiveRate() {
+    return this.sampleRate;
+  }
+  shouldKeep(event) {
+    if (this.sampleRate >= 1)
+      return true;
+    if (this.sampleRate <= 0)
+      return false;
+    const key = pickHashKey(event, this.hashField);
+    if (key === null)
+      return true;
+    return this.hashFn(key) / 4294967296 < this.sampleRate;
+  }
+};
+var TailSampler = class {
+  sampleRate;
+  slowThresholdMs;
+  keepError;
+  rules;
+  head;
+  constructor(opts = {}) {
+    this.sampleRate = clamp01(opts.sampleRate ?? 0.1);
+    this.slowThresholdMs = opts.slowThresholdMs ?? 5e3;
+    this.keepError = opts.keepError ?? true;
+    this.rules = opts.rules ?? [];
+    this.head = new HeadSampler({ sampleRate: this.sampleRate });
+  }
+  get effectiveRate() {
+    return this.sampleRate;
+  }
+  shouldKeep(event) {
+    for (const r of this.rules) {
+      const d = r(event);
+      if (d === true)
+        return true;
+      if (d === false)
+        return false;
+    }
+    if (this.keepError && isError(event))
+      return true;
+    if (isSlow(event, this.slowThresholdMs))
+      return true;
+    return this.head.shouldKeep(event);
+  }
+};
+function composeSamplers(...samplers) {
+  if (samplers.length === 0)
+    return new HeadSampler({ sampleRate: 1 });
+  if (samplers.length === 1)
+    return samplers[0];
+  return {
+    get effectiveRate() {
+      return Math.max(...samplers.map((s) => s.effectiveRate));
+    },
+    shouldKeep(event) {
+      return samplers.some((s) => s.shouldKeep(event));
+    }
+  };
+}
+
 // src/index.ts
 var sessionIdCounter = 0;
 function initCollector(opts) {
@@ -1058,13 +1211,18 @@ function initCollector(opts) {
     traceFlags: "01"
   });
   traceContext.startView();
+  const sampler = opts.sampler ?? composeSamplers(
+    new HeadSampler({ sampleRate: opts.sampleRate ?? 1 }),
+    new TailSampler({ sampleRate: 1, keepError: true, slowThresholdMs: opts.slowThresholdMs ?? 3e3 })
+  );
   const reporter = new Reporter({
     endpoint: opts.endpoint,
     release: opts.release,
     batchSize: opts.batchSize,
     flushInterval: opts.flushInterval,
     offlineStore: opts.offlineStore,
-    compress: opts.compress
+    compress: opts.compress,
+    sampler
   });
   reporter.start();
   if (!opts.offlineStore) {
@@ -1075,6 +1233,8 @@ function initCollector(opts) {
   const traceId = traceContext.traceId ?? "";
   const makeEvent = (type, subType, payload, fingerprint, extraTags) => {
     const sampled = Math.random() < sampleRate;
+    const piiOpts = opts.pii === false ? null : opts.pii ?? {};
+    const safePayload = piiOpts ? redactPayload(payload, piiOpts) : payload;
     return {
       id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       type,
@@ -1084,8 +1244,8 @@ function initCollector(opts) {
       spanId: generateSpanIdHex(),
       sessionId,
       release: opts.release ?? "unknown",
-      payload,
-      piiSafe: true,
+      payload: safePayload,
+      piiSafe: piiOpts !== null,
       sampled,
       sampleRate,
       fingerprint,
