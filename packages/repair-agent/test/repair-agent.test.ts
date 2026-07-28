@@ -164,6 +164,8 @@ describe('runHarness (Verifier-upgraded loop)', () => {
   });
 
   it('re-diagnoses when Verifier refutes (does NOT inject)', async () => {
+    // mock fetch 立即 reject -> Verifier 保守 refute（确定性，不依赖真实 DNS 失败时序）
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network'));
     let diagnoseCalls = 0;
     const deps = makeDeps({
       diagnose: vi.fn(async () => {
@@ -174,9 +176,7 @@ describe('runHarness (Verifier-upgraded loop)', () => {
           patch: { patchType: 'replace' as const, targetPath: 'window.fn', code: 'function(){return 1}' },
         };
       }),
-      // 用自定义 verify 不可行（harness 内部调 verifyAdversarially），
-      // 故通过让 fetch 抛错使 Verifier 保守 refute，验证"refuted -> 不注入 -> 重诊断"
-      verifierConfig: { baseUrl: 'http://unreachable-invalid', model: 'm', maxRetries: 0 },
+      verifierConfig: { baseUrl: 'http://x', model: 'm', maxRetries: 0 },
       inject: vi.fn(async () => ({ injected: true })),
       check: vi.fn(async () => false),
       reset: vi.fn(async () => {}),
@@ -187,6 +187,7 @@ describe('runHarness (Verifier-upgraded loop)', () => {
     expect(diagnoseCalls).toBe(3);
     expect(deps.inject).not.toHaveBeenCalled();
     expect(r.resolved).toBe(false);
+    fetchSpy.mockRestore();
   });
 
   it('escalates patch strategy when injection fails', async () => {

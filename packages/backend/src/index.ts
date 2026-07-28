@@ -6,4 +6,5 @@
  */
 
 export { EventStore, type ErrorGroup, type VitalAggregation, type SessionInfo } from './store';
+export { SourcemapStore, parseStack, type StackFrame, type ResolvedFrame } from './sourcemap';
 export { createBackendServer, type BackendOptions, type BackendHandle } from './server';

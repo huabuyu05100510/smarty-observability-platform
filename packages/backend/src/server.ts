@@ -12,6 +12,7 @@
 
 import http from 'node:http';
 import { EventStore } from './store';
+import { SourcemapStore } from './sourcemap';
 import { dashboardHtml } from './dashboard';
 
 export interface BackendOptions {
@@ -19,6 +20,8 @@ export interface BackendOptions {
   host?: string;
   /** CORS origin（默认 *，本地） */
   corsOrigin?: string;
+  /** 可选 GitHub raw 回退基址（sourcemap 远端获取） */
+  githubRawBase?: string;
 }
 
 export interface BackendHandle {
@@ -38,6 +41,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 
 export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
   const store = new EventStore(10000);
+  const sourcemaps = new SourcemapStore({ githubRawBase: opts.githubRawBase });
   const port = opts.port ?? 3921;
   const host = opts.host ?? '127.0.0.1';
   const corsOrigin = opts.corsOrigin ?? '*';
@@ -96,6 +100,28 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
       if (url === '/api/sessions' && method === 'GET') {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ sessions: store.sessionsList() }));
+        return;
+      }
+
+      // POST /api/sourcemaps/upload - 上传 .map（body 为 map 文本；query: appId/version/filename）
+      if (url.startsWith('/api/sourcemaps/upload') && method === 'POST') {
+        const u = new URL(url, 'http://x');
+        const appId = u.searchParams.get('appId') ?? 'default';
+        const version = u.searchParams.get('version') ?? 'latest';
+        const filename = u.searchParams.get('filename') ?? 'bundle.js';
+        const content = await readBody(req);
+        const stored = sourcemaps.save(appId, version, filename, content);
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ ok: true, stored }));
+        return;
+      }
+
+      // POST /api/sourcemaps/resolve - 还原压缩栈（body: {appId, version, stack}）
+      if (url === '/api/sourcemaps/resolve' && method === 'POST') {
+        const b = JSON.parse((await readBody(req)) || '{}') as { appId?: string; version?: string; stack?: string };
+        const frames = sourcemaps.resolveStack(b.appId ?? 'default', b.version ?? 'latest', b.stack ?? '');
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ frames }));
         return;
       }
 
