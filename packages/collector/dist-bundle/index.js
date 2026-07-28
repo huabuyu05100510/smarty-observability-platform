@@ -422,6 +422,70 @@ function installErrors(cb) {
   };
   window.addEventListener("error", onResourceError, true);
   cleanups.push(() => window.removeEventListener("error", onResourceError, true));
+  if (typeof console !== "undefined" && typeof console.error === "function") {
+    const rawConsoleError = console.error;
+    const patchedConsoleError = (...args) => {
+      try {
+        const first = args[0];
+        if (first instanceof Error) {
+          const signal = {
+            id: `console-${Date.now()}`,
+            type: "console",
+            message: first.message,
+            stack: first.stack,
+            timestamp: Date.now(),
+            handled: true
+          };
+          const fp = computeFingerprint({
+            message: first.message,
+            stack: first.stack,
+            errorType: first.name
+          });
+          cb.onError(signal, fp);
+        }
+      } catch {
+      }
+      rawConsoleError.apply(console, args);
+    };
+    console.error = patchedConsoleError;
+    cleanups.push(() => {
+      console.error = rawConsoleError;
+    });
+  }
+  const patchWorker = (Ctor) => {
+    const w = typeof window !== "undefined" ? window : void 0;
+    const Orig = w?.[Ctor];
+    if (typeof Orig !== "function")
+      return;
+    const Patched = function(scriptURL, options) {
+      const worker = new Orig(scriptURL, options);
+      try {
+        worker.addEventListener("error", (e) => {
+          const ev = e;
+          const signal = {
+            id: `worker-${Date.now()}`,
+            type: "worker",
+            message: ev.message || "Script error.",
+            filename: ev.filename,
+            lineno: ev.lineno,
+            colno: ev.colno,
+            timestamp: Date.now(),
+            sourceURL: String(scriptURL),
+            handled: false
+          };
+          cb.onError(signal, computeFingerprint({ message: signal.message, sourceURL: String(scriptURL), errorType: "WorkerError" }));
+        });
+      } catch {
+      }
+      return worker;
+    };
+    w[Ctor] = Patched;
+    cleanups.push(() => {
+      w[Ctor] = Orig;
+    });
+  };
+  patchWorker("Worker");
+  patchWorker("SharedWorker");
   return () => {
     cleanups.forEach((fn) => fn());
     installed = false;

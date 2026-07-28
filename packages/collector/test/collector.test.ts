@@ -121,6 +121,17 @@ describe('installErrors', () => {
     expect(errors[0].signal.type).toBe('react');
     expect(errors[0].signal.componentStack).toContain('Child');
   });
+
+  it('captures console.error(Error) as console-type signal', () => {
+    const errors: Array<{ signal: { type: string; message: string } }> = [];
+    const uninstall = installErrors({ onError: (signal) => errors.push({ signal }) });
+    const err = new Error('console boom');
+    err.stack = 'Error: console boom\n    at fn (c.js:1:1)';
+    // eslint-disable-next-line no-console
+    console.error(err);
+    expect(errors.some(e => e.signal.type === 'console' && e.signal.message === 'console boom')).toBe(true);
+    uninstall();
+  });
 });
 
 describe('initCollector integration', () => {

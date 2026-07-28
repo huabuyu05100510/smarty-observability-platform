@@ -34,7 +34,7 @@ export type HealMode = 'diagnose_only' | 'heal_safe' | 'ai_patch' | 'open_pr';
 
 export interface ErrorSignal {
   id: string;
-  type: 'js' | 'promise' | 'resource' | 'console' | 'react';
+  type: 'js' | 'promise' | 'resource' | 'console' | 'react' | 'worker';
   message: string;
   stack?: string;
   filename?: string;
@@ -349,6 +349,7 @@ export type MonitorEventSubType =
   | 'resource'
   | 'react'
   | 'console'
+  | 'worker'
   | 'lcp'
   | 'inp'
   | 'cls'

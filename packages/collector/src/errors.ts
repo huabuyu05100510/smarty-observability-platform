@@ -97,6 +97,68 @@ export function installErrors(cb: ErrorCallbacks): () => void {
   window.addEventListener('error', onResourceError, true); // capture
   cleanups.push(() => window.removeEventListener('error', onResourceError, true));
 
+  // console.error 捕获（移植 monitor-sdk consoleError 插件）
+  // 第一个参数是 Error 实例时上报 subType='console'（未抛出的业务错误值得感知）
+  if (typeof console !== 'undefined' && typeof console.error === 'function') {
+    const rawConsoleError = console.error;
+    const patchedConsoleError = (...args: unknown[]) => {
+      try {
+        const first = args[0];
+        if (first instanceof Error) {
+          const signal: ErrorSignal = {
+            id: `console-${Date.now()}`,
+            type: 'console',
+            message: first.message,
+            stack: first.stack,
+            timestamp: Date.now(),
+            handled: true,
+          };
+          const fp = computeFingerprint({
+            message: first.message, stack: first.stack, errorType: first.name,
+          });
+          cb.onError(signal, fp);
+        }
+      } catch { /* 不影响业务 console.error */ }
+      rawConsoleError.apply(console, args);
+    };
+    console.error = patchedConsoleError;
+    cleanups.push(() => { console.error = rawConsoleError; });
+  }
+
+  // Worker / SharedWorker 错误捕获（移植 monitor-sdk workerError 插件核心）
+  const patchWorker = (Ctor: 'Worker' | 'SharedWorker'): void => {
+    const w = typeof window !== 'undefined' ? window : undefined;
+    const Orig = (w as unknown as Record<string, unknown> | undefined)?.[Ctor] as
+      abstract new (scriptURL: string | URL, options?: WorkerOptions) => { addEventListener(type: string, listener: (e: Event) => void): void } | undefined;
+    if (typeof Orig !== 'function') return;
+    const Patched = function (this: unknown, scriptURL: string | URL, options?: WorkerOptions) {
+      // @ts-expect-error construct original
+      const worker = new Orig(scriptURL, options);
+      try {
+        worker.addEventListener('error', (e: Event) => {
+          const ev = e as ErrorEvent;
+          const signal: ErrorSignal = {
+            id: `worker-${Date.now()}`,
+            type: 'worker',
+            message: ev.message || 'Script error.',
+            filename: ev.filename,
+            lineno: ev.lineno,
+            colno: ev.colno,
+            timestamp: Date.now(),
+            sourceURL: String(scriptURL),
+            handled: false,
+          };
+          cb.onError(signal, computeFingerprint({ message: signal.message, sourceURL: String(scriptURL), errorType: 'WorkerError' }));
+        });
+      } catch { /* ignore */ }
+      return worker;
+    } as unknown as typeof Orig;
+    (w as unknown as Record<string, unknown>)[Ctor] = Patched;
+    cleanups.push(() => { (w as unknown as Record<string, unknown>)[Ctor] = Orig; });
+  };
+  patchWorker('Worker');
+  patchWorker('SharedWorker');
+
   return () => {
     cleanups.forEach(fn => fn());
     installed = false;
