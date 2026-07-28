@@ -81,6 +81,10 @@ Diagnoser(LLM) 生成根因 + 补丁
 | `@monit/coordinator` | MR 交付 | HTTP bus + LLM 补丁 + GitHub PR + ★MR 草稿闭环（轨道 B）+ 运行时热修 |
 | `@monit/guardrails` | 自愈护栏 | 测试充分性评估 + contamination 污染检测（防 SWE-bench 假阳性） |
 | `@monit/collector` | 浏览器采集 | Web Vitals+LoAF / error+指纹 / 面包屑 / reporter，产出 MonitorEvent |
+| `@monit/llm-rca` | LLM 根因 | ★Navigator/Diagnoser/Verifier 多 agent + 残差融合（对标 F1 88.4%，喂结构化上下文）|
+| `@monit/backend` | ingest + 面板 | 指纹分组聚合 + vital p75/p99 + session + 内置 HTML 面板 |
+| `@monit/provenance` | 数据溯源 DAG | 屏幕值 ← 接口字段 ← 后端 span 反向溯源（tracesdk 独门）|
+| `@monit/diagnose`（含差异火焰图） | 性能回归 | buildDiffFlamegraph：红=回归/蓝=改善，对标 Brendan Gregg |
 
 ## 用法
 
@@ -139,7 +143,14 @@ if (result.resolved && result.confidence?.canAutoApply) {
 
 - **P0（已完成）**：契约 + trace + 指纹 + 诊断 + 自愈（Verifier 升级）+ coordinator，主链贯通 ✅
 - **P1（已完成）**：变更关联 RCA 全量 + MR 草稿闭环 + 测试充分性护栏 + contamination 检测 + 浏览器采集 SDK ✅
-- **P2（后续）**：LoAF 逐脚本归因 + 数据溯源 DAG + 差异火焰图 + LLM-RCA 残差融合对标 88.4%
+- **P2（已完成）**：LLM-RCA 残差融合（对标 88.4%）+ 后端 ingest + 内置面板 + 差异火焰图 + 数据溯源 DAG ✅
+
+## 后续可扩展
+
+- LoAF 逐脚本 charPosition 归因增强（collector 已采 LoAF，diagnose 已归因到脚本）
+- 后端持久化（内存 -> ClickHouse/Postgres，schema 不变）
+- React 面板（替代内置 HTML，更丰富的下钻/溯源 DAG 可视化）
+- 真实 CDP 注入 + GitHub PR 端到端联调（接口已就绪）
 
 ## 致敬与借鉴
 

@@ -245,6 +245,6 @@ export function buildReportSummary(report: DiagnosticReport): {
   return { issueCount, worstSeverity: worst, headline };
 }
 
-export { buildPerfFlamegraph } from './flamegraph';
+export { buildPerfFlamegraph, buildDiffFlamegraph, type DiffFlamegraphData, type DiffFlameRow } from './flamegraph';
 export { correlateChange, type ChangeEvent, type AnomalySignal, type CorrelationOptions } from './change-correlation';
 export { diagnoseWithCorrelation, type DiagnoseWithCorrelationInput } from './full';

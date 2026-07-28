@@ -24,6 +24,12 @@ importers:
         specifier: ^2.0.0
         version: 2.0.0(@types/node@22.0.0)(jsdom@25.0.0)
 
+  packages/backend:
+    dependencies:
+      '@monit/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/collector:
     dependencies:
       '@monit/contracts':
@@ -66,6 +72,21 @@ importers:
         version: link:../contracts
 
   packages/guardrails:
+    dependencies:
+      '@monit/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/llm-rca:
+    dependencies:
+      '@monit/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@monit/repair-agent':
+        specifier: workspace:*
+        version: link:../repair-agent
+
+  packages/provenance:
     dependencies:
       '@monit/contracts':
         specifier: workspace:*

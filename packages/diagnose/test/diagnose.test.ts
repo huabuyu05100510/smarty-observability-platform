@@ -4,10 +4,11 @@ import {
   proposeHealActions,
   buildReportSummary,
   buildPerfFlamegraph,
+  buildDiffFlamegraph,
   correlateChange,
   diagnoseWithCorrelation,
 } from '../src/index';
-import type { DiagnosticReport } from '@monit/contracts';
+import type { DiagnosticReport, PerfFlamegraphData } from '@monit/contracts';
 
 function makeReport(over: Partial<DiagnosticReport> = {}): DiagnosticReport {
   return {
@@ -213,5 +214,46 @@ describe('diagnoseWithCorrelation (multi-source candidates)', () => {
       anomaly: { startedAt: report.createdAt, spikeRatio: 2 },
     });
     expect(records[0].candidates.length).toBe(1);
+  });
+});
+
+describe('buildDiffFlamegraph (regression visualization)', () => {
+  function makeFlame(totalMs: number, scriptMs: number): PerfFlamegraphData {
+    return {
+      roots: [{
+        id: 'root', name: `INP ${totalMs}ms`, kind: 'frame', startMs: 0, durationMs: totalMs, depth: 0,
+        children: [{
+          id: 'p', name: 'processing', kind: 'inp_phase', startMs: 0, durationMs: scriptMs, depth: 1,
+          children: [{ id: 's', name: 'compute', kind: 'script', startMs: 0, durationMs: scriptMs, depth: 2, children: [] }],
+        }],
+      }],
+      totalMs,
+      p99: scriptMs,
+    };
+  }
+
+  it('marks regressed frames (after slower than before)', () => {
+    const before = makeFlame(300, 250);
+    const after = makeFlame(400, 350);
+    const diff = buildDiffFlamegraph(before, after);
+    expect(diff.regressionRatio).toBeGreaterThan(0);
+    const script = diff.roots[0].children[0].children[0];
+    expect(script.trend).toBe('regression');
+    expect(script.deltaMs).toBeGreaterThan(0);
+  });
+
+  it('marks improved frames (after faster)', () => {
+    const before = makeFlame(400, 350);
+    const after = makeFlame(300, 250);
+    const diff = buildDiffFlamegraph(before, after);
+    expect(diff.regressionRatio).toBeLessThan(0);
+    expect(diff.roots[0].children[0].children[0].trend).toBe('improvement');
+  });
+
+  it('marks new frames absent in baseline', () => {
+    const before: PerfFlamegraphData = { roots: [], totalMs: 0, p99: 0 };
+    const after = makeFlame(400, 350);
+    const diff = buildDiffFlamegraph(before, after);
+    expect(diff.roots[0].trend).toBe('new');
   });
 });

@@ -144,3 +144,77 @@ export function buildPerfFlamegraph(
     p99,
   };
 }
+
+// ─── 差异火焰图（性能回归可视化） ─────────────────────────────────────────────
+// 对标 Brendan Gregg differential flame graph：红=上升（回归），蓝=下降（改善）。
+// Netflix 每日夜间自动生成，识别性能回归。
+
+export interface DiffFlameRow extends PerfFlameRow {
+  /** 与基线对比的时长差（正=变慢/回归，负=变快/改善） */
+  deltaMs?: number;
+  /** 趋势 */
+  trend?: 'regression' | 'improvement' | 'stable' | 'new' | 'removed';
+}
+
+export interface DiffFlamegraphData {
+  roots: DiffFlameRow[];
+  totalMs: number;
+  baselineTotalMs: number;
+  /** 整体回归幅度（>0 = 变慢） */
+  regressionRatio: number;
+}
+
+/** 索引火焰图：name@depth -> row（用于匹配前后两图） */
+function indexFlame(rows: PerfFlameRow[], depth = 0, out = new Map<string, PerfFlameRow>()): Map<string, PerfFlameRow> {
+  for (const r of rows) {
+    const key = `${r.name}@${depth}`;
+    if (!out.has(key)) out.set(key, r);
+    if (r.children.length > 0) indexFlame(r.children, depth + 1, out);
+  }
+  return out;
+}
+
+function diffRows(
+  after: PerfFlameRow[],
+  beforeIndex: Map<string, PerfFlameRow>,
+  depth = 0,
+): DiffFlameRow[] {
+  return after.map(r => {
+    const key = `${r.name}@${depth}`;
+    const before = beforeIndex.get(key);
+    const deltaMs = before ? r.durationMs - before.durationMs : r.durationMs;
+    let trend: DiffFlameRow['trend'];
+    if (!before) trend = 'new';
+    else if (deltaMs > 5) trend = 'regression';
+    else if (deltaMs < -5) trend = 'improvement';
+    else trend = 'stable';
+
+    return {
+      ...r,
+      deltaMs,
+      trend,
+      children: diffRows(r.children, beforeIndex, depth + 1),
+    };
+  });
+}
+
+/**
+ * 构建差异火焰图：after vs before，标记回归/改善帧。
+ * 用于性能回归可视化（优化前后对比，避免"感觉变快"的主观判断）。
+ */
+export function buildDiffFlamegraph(
+  before: PerfFlamegraphData,
+  after: PerfFlamegraphData,
+): DiffFlamegraphData {
+  const beforeIndex = indexFlame(before.roots);
+  const roots = diffRows(after.roots, beforeIndex);
+  const regressionRatio = before.totalMs > 0
+    ? (after.totalMs - before.totalMs) / before.totalMs
+    : 0;
+  return {
+    roots,
+    totalMs: after.totalMs,
+    baselineTotalMs: before.totalMs,
+    regressionRatio,
+  };
+}
