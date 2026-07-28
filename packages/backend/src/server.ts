@@ -52,15 +52,18 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
     const method = req.method ?? 'GET';
 
     try {
-      // POST /api/events - ingest
+      // POST /api/events - ingest（兼容裸数组 [..] 与 {events:[..]} 信封）
       if (url === '/api/events' && method === 'POST') {
         const body = await readBody(req);
-        const events = JSON.parse(body || '[]') as unknown[];
-        if (Array.isArray(events)) {
-          store.ingest(events as never);
-        }
+        const parsed = JSON.parse(body || '[]') as unknown;
+        const events: unknown[] = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray((parsed as { events?: unknown[] })?.events)
+            ? (parsed as { events: unknown[] }).events
+            : [];
+        store.ingest(events as never);
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ ok: true, ingested: Array.isArray(events) ? events.length : 0 }));
+        res.end(JSON.stringify({ ok: true, ingested: events.length }));
         return;
       }
 

@@ -62,8 +62,8 @@ describe('Reporter', () => {
     // batchSize=2 触发自动 flush
     await new Promise(r => setTimeout(r, 10));
     expect(fetchSpy).toHaveBeenCalled();
-    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string) as MonitorEvent[];
-    expect(body.length).toBe(2);
+    const body = JSON.parse((fetchSpy.mock.calls[0][1] as RequestInit).body as string) as { events: MonitorEvent[] };
+    expect(body.events.length).toBe(2);
     reporter.stop();
   });
 
@@ -127,8 +127,8 @@ describe('initCollector integration', () => {
   it('installs and routes errors to reporter with traceId + fingerprint', async () => {
     const events: MonitorEvent[] = [];
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: string | URL | Request, init?: RequestInit) => {
-      const batch = JSON.parse((init?.body as string) ?? '[]') as MonitorEvent[];
-      events.push(...batch);
+      const parsed = JSON.parse((init?.body as string) ?? '[]') as { events: MonitorEvent[] };
+      events.push(...(parsed.events ?? []));
       return new Response('{}', { status: 200 });
     });
     // @ts-expect-error disable beacon to force fetch path

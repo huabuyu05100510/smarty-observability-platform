@@ -653,13 +653,17 @@ function describeElement(el) {
 var Reporter = class {
   queue = [];
   timer = null;
+  onlineHandler = null;
   opts;
   constructor(opts) {
     this.opts = {
       endpoint: opts.endpoint,
       batchSize: opts.batchSize ?? 10,
       flushInterval: opts.flushInterval ?? 5e3,
-      release: opts.release
+      maxAttempts: opts.maxAttempts ?? 5,
+      release: opts.release,
+      offlineStore: opts.offlineStore,
+      compress: opts.compress
     };
   }
   start() {
@@ -667,41 +671,79 @@ var Reporter = class {
       return;
     this.timer = setInterval(() => void this.flush(), this.opts.flushInterval);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
+    if (typeof window !== "undefined") {
+      this.onlineHandler = () => void this.flushOffline();
+      window.addEventListener("online", this.onlineHandler);
+    }
+    void this.flushOffline();
   }
   enqueue(event) {
     this.queue.push(event);
-    if (this.queue.length >= this.opts.batchSize) {
+    if (this.queue.length >= this.opts.batchSize)
       void this.flush();
-    }
   }
   onVisibilityChange = () => {
-    if (document.visibilityState === "hidden") {
+    if (document.visibilityState === "hidden")
       void this.flush();
-    }
   };
   async flush() {
     if (this.queue.length === 0)
       return;
     const batch = this.queue.splice(0, this.queue.length);
-    const body = JSON.stringify(batch);
+    await this.sendWithRetry(batch);
+  }
+  /** 单批发送：成功即止；失败入离线队列（若有）。 */
+  async sendWithRetry(events) {
+    const ok = await sendOnce(this.opts.endpoint, events, { compress: this.opts.compress });
+    if (ok)
+      return;
+    if (!this.opts.offlineStore)
+      return;
     try {
-      const res = await fetch(this.opts.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-        keepalive: true
+      await this.opts.offlineStore.add({
+        payload: events,
+        attempts: 0,
+        lastAttemptAt: Date.now(),
+        dsn: this.opts.endpoint
       });
-      if (res.ok)
-        return;
     } catch {
     }
-    if (typeof navigator !== "undefined" && navigator.sendBeacon) {
-      const blob = new Blob([body], { type: "text/plain" });
-      if (navigator.sendBeacon(this.opts.endpoint, blob))
-        return;
+    void this.flushOffline();
+  }
+  /** 重发离线队列：成功删、失败 attempts+1、达 maxAttempts 丢弃。 */
+  async flushOffline() {
+    const store = this.opts.offlineStore;
+    if (!store)
+      return;
+    let items;
+    try {
+      items = await store.all();
+    } catch {
+      return;
     }
-    if (this.queue.length < 100)
-      this.queue.unshift(...batch);
+    for (const item of items) {
+      if (item.dsn !== this.opts.endpoint || item.id === void 0)
+        continue;
+      if (item.attempts >= this.opts.maxAttempts) {
+        try {
+          await store.remove(item.id);
+        } catch {
+        }
+        continue;
+      }
+      const ok = await sendOnce(item.dsn, item.payload, { compress: this.opts.compress });
+      if (ok) {
+        try {
+          await store.remove(item.id);
+        } catch {
+        }
+      } else {
+        try {
+          await store.update({ ...item, attempts: item.attempts + 1, lastAttemptAt: Date.now() });
+        } catch {
+        }
+      }
+    }
   }
   stop() {
     if (this.timer) {
@@ -709,9 +751,156 @@ var Reporter = class {
       this.timer = null;
     }
     document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    if (this.onlineHandler && typeof window !== "undefined") {
+      window.removeEventListener("online", this.onlineHandler);
+    }
     void this.flush();
   }
+  /** 异步挂载离线存储（IDB 打开完成后注入，不阻塞 init）。 */
+  attachOfflineWhenReady(storePromise) {
+    storePromise.then((store) => {
+      if (store) {
+        this.opts.offlineStore = store;
+        void this.flushOffline();
+      }
+    }).catch(() => {
+    });
+  }
 };
+async function sendOnce(dsn, events, opts) {
+  const body = JSON.stringify({ events });
+  if (opts.compress) {
+    try {
+      const { gzip } = await import('pako');
+      const gz = gzip(body);
+      try {
+        const resp = await fetch(dsn, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain", "Content-Encoding": "gzip-base64" },
+          body: uint8ToBase64(gz),
+          keepalive: true
+        });
+        if (resp.ok)
+          return true;
+      } catch {
+      }
+    } catch {
+    }
+  }
+  if (typeof fetch === "function") {
+    try {
+      const resp = await fetch(dsn, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        keepalive: true
+      });
+      if (resp.ok)
+        return true;
+    } catch {
+    }
+  }
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    try {
+      const blob = new Blob([body], { type: "text/plain" });
+      if (navigator.sendBeacon(dsn, blob))
+        return true;
+    } catch {
+    }
+  }
+  return false;
+}
+function uint8ToBase64(bytes) {
+  if (typeof btoa === "function") {
+    let binary = "";
+    const chunkSize = 32768;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+  const Buf = globalThis.Buffer;
+  if (Buf)
+    return Buf.from(bytes).toString("base64");
+  let out = "";
+  for (let i = 0; i < bytes.length; i++)
+    out += String.fromCharCode(bytes[i]);
+  return out;
+}
+
+// src/offline-store.ts
+var DB_NAME = "monit";
+var STORE_NAME = "offline_queue";
+var DB_VERSION = 1;
+var dbInstance = null;
+function openDb() {
+  if (dbInstance)
+    return dbInstance;
+  dbInstance = new Promise((resolve) => {
+    if (typeof indexedDB === "undefined" || typeof window === "undefined") {
+      resolve(null);
+      return;
+    }
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME, { keyPath: "id", autoIncrement: true });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+  return dbInstance;
+}
+function tx(db, mode) {
+  return db.transaction(STORE_NAME, mode).objectStore(STORE_NAME);
+}
+function reqToPromise(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function createIdbOfflineStore() {
+  const db = await openDb();
+  if (!db)
+    return null;
+  return {
+    async add(item) {
+      try {
+        reqToPromise(tx(db, "readwrite").add(item)).catch(() => {
+        });
+      } catch {
+      }
+    },
+    async all() {
+      try {
+        return await reqToPromise(tx(db, "readonly").getAll());
+      } catch {
+        return [];
+      }
+    },
+    async remove(id) {
+      try {
+        reqToPromise(tx(db, "readwrite").delete(id)).catch(() => {
+        });
+      } catch {
+      }
+    },
+    async update(item) {
+      try {
+        reqToPromise(tx(db, "readwrite").put(item)).catch(() => {
+        });
+      } catch {
+      }
+    }
+  };
+}
 
 // src/index.ts
 var sessionIdCounter = 0;
@@ -730,9 +919,14 @@ function initCollector(opts) {
     endpoint: opts.endpoint,
     release: opts.release,
     batchSize: opts.batchSize,
-    flushInterval: opts.flushInterval
+    flushInterval: opts.flushInterval,
+    offlineStore: opts.offlineStore,
+    compress: opts.compress
   });
   reporter.start();
+  if (!opts.offlineStore) {
+    reporter.attachOfflineWhenReady(createIdbOfflineStore());
+  }
   const breadcrumbs = new BreadcrumbCollector(50);
   breadcrumbs.install();
   const traceId = traceContext.traceId ?? "";

@@ -41,6 +41,9 @@ importers:
       '@monit/trace':
         specifier: workspace:*
         version: link:../trace
+      pako:
+        specifier: ^2.1.0
+        version: 2.1.0
 
   packages/contracts: {}
 
@@ -1639,6 +1642,10 @@ packages:
     dependencies:
       mimic-fn: 4.0.0
     dev: true
+
+  /pako@2.1.0:
+    resolution: {integrity: sha512-w+eufiZ1WuJYgPXbV/PO3NCMEc3xqylkKHzp8bxp1uW4qaSNQUkwmLLEc3kKsfz8lpV1F8Ht3U1Cm+9Srog2ug==}
+    dev: false
 
   /parse5@7.3.0:
     resolution: {integrity: sha512-IInvU7fabl34qmi9gY8XOVxhYyMyuH2xUNpb2q8/Y+7552KlejkRvqvD19nMoUW/uQGGbqNpA6Tufu5FL5BZgw==}

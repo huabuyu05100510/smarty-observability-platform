@@ -20,6 +20,7 @@
   "dependencies": {
     "@monit/contracts": "workspace:*",
     "@monit/trace": "workspace:*",
-    "@monit/fingerprint": "workspace:*"
+    "@monit/fingerprint": "workspace:*",
+    "pako": "^2.1.0"
   }
 }

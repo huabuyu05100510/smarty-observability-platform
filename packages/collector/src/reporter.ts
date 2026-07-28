@@ -1,93 +1,216 @@
 /**
- * @monit/collector/reporter - 上报器（批处理 + sendBeacon / fetch keepalive）
+ * @monit/collector/reporter - 上报器（离线队列重试 + 可选 gzip + 双通道）
  *
- * 对标 monitor-sdk @monit/core reporter。批处理 + 可见性切换时 flush。
- * 离线时丢弃（P1 简化；P2 可接 IndexedDB 重试）。
+ * 移植自 monitor-sdk/packages/core/src/reporter.ts（生产级实现），替换之前的薄壳。
+ *
+ * 关键能力（之前薄壳缺失的）：
+ * - 离线队列：失败（网络错误/non-2xx）入 IndexedDB，定时 + online 事件 flushOffline 重试，maxAttempts 丢弃
+ * - 双通道：fetch keepalive 主（能读 status，触发离线回退），sendBeacon 兜底（unload 保数据）
+ * - 可选 gzip：compress:true 走 pako gzip+base64，省带宽（pako 动态 import，不强制依赖）
+ *
+ * 跨源 CORS 修复（之前 bug）：sendBeacon(application/json) 跨源被静默拦截 → 这里 sendBeacon
+ * 用 text/plain（simple 免 preflight），fetch keepalive 主通道做正规 preflight。
  */
 
-import type { MonitorEvent } from '@monit/contracts';
+import type { MonitorEvent } from '@monit/contracts'
+
+export interface OfflineQueueItem {
+  id?: number
+  payload: MonitorEvent[]
+  attempts: number
+  lastAttemptAt: number
+  dsn: string
+}
+
+export interface OfflineStore {
+  add(item: Omit<OfflineQueueItem, 'id'>): Promise<void>
+  all(): Promise<OfflineQueueItem[]>
+  remove(id: number): Promise<void>
+  update(item: OfflineQueueItem): Promise<void>
+}
 
 export interface ReporterOptions {
-  endpoint: string;
-  /** 批大小，默认 10 */
-  batchSize?: number;
-  /** flush 间隔 ms，默认 5000 */
-  flushInterval?: number;
-  /** release / version */
-  release?: string;
+  endpoint: string
+  release?: string
+  batchSize?: number
+  flushInterval?: number
+  /** 离线存储（不传则失败即丢） */
+  offlineStore?: OfflineStore
+  /** 最大重试次数，默认 5 */
+  maxAttempts?: number
+  /** gzip 压缩（需 pako 可用） */
+  compress?: boolean
 }
 
 export class Reporter {
-  private queue: MonitorEvent[] = [];
-  private timer: ReturnType<typeof setInterval> | null = null;
-  private readonly opts: Required<Pick<ReporterOptions, 'endpoint' | 'batchSize' | 'flushInterval'>> & { release?: string };
+  private queue: MonitorEvent[] = []
+  private timer: ReturnType<typeof setInterval> | null = null
+  private onlineHandler: (() => void) | null = null
+  private readonly opts: Required<Pick<ReporterOptions, 'endpoint' | 'batchSize' | 'flushInterval' | 'maxAttempts'>> & {
+    release?: string; offlineStore?: OfflineStore; compress?: boolean
+  }
 
   constructor(opts: ReporterOptions) {
     this.opts = {
       endpoint: opts.endpoint,
       batchSize: opts.batchSize ?? 10,
       flushInterval: opts.flushInterval ?? 5000,
+      maxAttempts: opts.maxAttempts ?? 5,
       release: opts.release,
-    };
+      offlineStore: opts.offlineStore,
+      compress: opts.compress,
+    }
   }
 
   start(): void {
-    if (this.timer) return;
-    this.timer = setInterval(() => void this.flush(), this.opts.flushInterval);
-    // 可见性切换 hidden 时立即 flush（sendBeacon 适合此时机）
-    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    if (this.timer) return
+    this.timer = setInterval(() => void this.flush(), this.opts.flushInterval)
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+    // online 事件触发离线队列重发
+    if (typeof window !== 'undefined') {
+      this.onlineHandler = () => void this.flushOffline()
+      window.addEventListener('online', this.onlineHandler)
+    }
+    // 启动时重发一次历史离线队列
+    void this.flushOffline()
   }
 
   enqueue(event: MonitorEvent): void {
-    this.queue.push(event);
-    if (this.queue.length >= this.opts.batchSize) {
-      void this.flush();
-    }
+    this.queue.push(event)
+    if (this.queue.length >= this.opts.batchSize) void this.flush()
   }
 
   private onVisibilityChange = (): void => {
-    if (document.visibilityState === 'hidden') {
-      void this.flush();
-    }
-  };
+    if (document.visibilityState === 'hidden') void this.flush()
+  }
 
   async flush(): Promise<void> {
-    if (this.queue.length === 0) return;
-    const batch = this.queue.splice(0, this.queue.length);
-    const body = JSON.stringify(batch);
+    if (this.queue.length === 0) return
+    const batch = this.queue.splice(0, this.queue.length)
+    await this.sendWithRetry(batch)
+  }
 
-    // 主：fetch keepalive。做正规 CORS preflight（跨源可靠），keepalive 也能在卸载时存活。
-    // 注意：不能用 sendBeacon(application/json)——sendBeacon 无法 preflight，
-    // 非 simple 的 application/json 跨源会被浏览器静默拦截（且 sendBeacon 返回 true 误导）。
+  /** 单批发送：成功即止；失败入离线队列（若有）。 */
+  private async sendWithRetry(events: MonitorEvent[]): Promise<void> {
+    const ok = await sendOnce(this.opts.endpoint, events, { compress: this.opts.compress })
+    if (ok) return
+    if (!this.opts.offlineStore) return // 失败即丢（无离线存储）
     try {
-      const res = await fetch(this.opts.endpoint, {
+      await this.opts.offlineStore.add({
+        payload: events, attempts: 0, lastAttemptAt: Date.now(), dsn: this.opts.endpoint,
+      })
+    } catch { /* IndexedDB 也炸：丢 */ }
+    void this.flushOffline()
+  }
+
+  /** 重发离线队列：成功删、失败 attempts+1、达 maxAttempts 丢弃。 */
+  async flushOffline(): Promise<void> {
+    const store = this.opts.offlineStore
+    if (!store) return
+    let items: OfflineQueueItem[]
+    try { items = await store.all() } catch { return }
+    for (const item of items) {
+      if (item.dsn !== this.opts.endpoint || item.id === undefined) continue
+      if (item.attempts >= this.opts.maxAttempts) {
+        try { await store.remove(item.id) } catch { /* ignore */ }
+        continue
+      }
+      const ok = await sendOnce(item.dsn, item.payload, { compress: this.opts.compress })
+      if (ok) {
+        try { await store.remove(item.id) } catch { /* ignore */ }
+      } else {
+        try { await store.update({ ...item, attempts: item.attempts + 1, lastAttemptAt: Date.now() }) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  stop(): void {
+    if (this.timer) { clearInterval(this.timer); this.timer = null }
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
+    if (this.onlineHandler && typeof window !== 'undefined') {
+      window.removeEventListener('online', this.onlineHandler)
+    }
+    void this.flush()
+  }
+
+  /** 异步挂载离线存储（IDB 打开完成后注入，不阻塞 init）。 */
+  attachOfflineWhenReady(storePromise: Promise<OfflineStore | null>): void {
+    storePromise
+      .then((store) => {
+        if (store) {
+          this.opts.offlineStore = store
+          void this.flushOffline()
+        }
+      })
+      .catch(() => {})
+  }
+}
+
+/**
+ * 单次发送。返回 true=成功(2xx/queued)，false=失败。
+ * fetch keepalive 主（读 status，跨源做正规 preflight）；sendBeacon(text/plain) 兜底。
+ */
+async function sendOnce(
+  dsn: string,
+  events: MonitorEvent[],
+  opts: { compress?: boolean },
+): Promise<boolean> {
+  const body = JSON.stringify({ events })
+
+  // 可选 gzip（pako 动态 import，不可用则降级未压缩）
+  if (opts.compress) {
+    try {
+      const { gzip } = await import('pako')
+      const gz = gzip(body) as Uint8Array
+      try {
+        const resp = await fetch(dsn, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain', 'Content-Encoding': 'gzip-base64' },
+          body: uint8ToBase64(gz),
+          keepalive: true,
+        })
+        if (resp.ok) return true
+      } catch { /* fallthrough */ }
+    } catch { /* pako 不可用，降级 */ }
+  }
+
+  // 主：fetch keepalive（跨源正规 preflight，能读 status 触发离线回退）
+  if (typeof fetch === 'function') {
+    try {
+      const resp = await fetch(dsn, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
         keepalive: true,
-      });
-      if (res.ok) return;
-    } catch {
-      // fall through to sendBeacon fallback
-    }
-
-    // 兜底：sendBeacon 用 text/plain（simple 请求，免 preflight，跨源可送达，卸载最稳）。
-    // 后端按 body 内容解析，不依赖 Content-Type。
-    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
-      const blob = new Blob([body], { type: 'text/plain' });
-      if (navigator.sendBeacon(this.opts.endpoint, blob)) return;
-    }
-
-    // 全失败：重新入队（限流防溢出），P2 接 IndexedDB 重试
-    if (this.queue.length < 100) this.queue.unshift(...batch);
+      })
+      if (resp.ok) return true
+      // non-2xx：继续尝试 sendBeacon 兜底（某些 4xx 可能仍可送达）
+    } catch { /* fallthrough to sendBeacon */ }
   }
 
-  stop(): void {
-    if (this.timer) {
-      clearInterval(this.timer);
-      this.timer = null;
-    }
-    document.removeEventListener('visibilitychange', this.onVisibilityChange);
-    void this.flush();
+  // 兜底：sendBeacon(text/plain) —— simple 请求免 preflight，跨源可送达，unload 最稳
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    try {
+      const blob = new Blob([body], { type: 'text/plain' })
+      if (navigator.sendBeacon(dsn, blob)) return true
+    } catch { /* ignore */ }
   }
+  return false
+}
+
+/** Uint8Array → base64（浏览器 btoa chunked + Node Buffer 兼容） */
+function uint8ToBase64(bytes: Uint8Array): string {
+  if (typeof btoa === 'function') {
+    let binary = ''
+    const chunkSize = 0x8000
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize) as unknown as number[])
+    }
+    return btoa(binary)
+  }
+  const Buf = (globalThis as { Buffer?: { from(b: Uint8Array): { toString(enc: string): string } } }).Buffer
+  if (Buf) return Buf.from(bytes).toString('base64')
+  let out = ''
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i])
+  return out
 }

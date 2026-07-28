@@ -13,7 +13,8 @@ import { traceContext, generateSpanIdHex, installTracePropagation } from '@monit
 import { installVitals } from './vitals';
 import { installErrors, reportReactError } from './errors';
 import { BreadcrumbCollector } from './breadcrumbs';
-import { Reporter } from './reporter';
+import { Reporter, type OfflineStore } from './reporter';
+import { createIdbOfflineStore } from './offline-store';
 
 export interface CollectorOptions {
   endpoint: string;
@@ -29,6 +30,10 @@ export interface CollectorOptions {
   flushInterval?: number;
   /** 采样率 0-1，默认 1 */
   sampleRate?: number;
+  /** 离线存储（默认自动用 IndexedDB；传 null 禁用离线重试） */
+  offlineStore?: OfflineStore;
+  /** gzip 压缩上报（需 pako 可用） */
+  compress?: boolean;
 }
 
 export interface CollectorHandle {
@@ -62,14 +67,19 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
   traceContext.startView();
   const traceHandle = installTracePropagation();
 
-  // 2. reporter
+  // 2. reporter（带 IndexedDB 离线队列重试，非阻塞挂载）
   const reporter = new Reporter({
     endpoint: opts.endpoint,
     release: opts.release,
     batchSize: opts.batchSize,
     flushInterval: opts.flushInterval,
+    offlineStore: opts.offlineStore,
+    compress: opts.compress,
   });
   reporter.start();
+  if (!opts.offlineStore) {
+    reporter.attachOfflineWhenReady(createIdbOfflineStore());
+  }
 
   // 3. 面包屑
   const breadcrumbs = new BreadcrumbCollector(50);
