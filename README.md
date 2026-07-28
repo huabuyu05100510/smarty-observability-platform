@@ -88,9 +88,20 @@ Diagnoser(LLM) 生成根因 + 补丁
 
 ## 用法
 
+**30 秒体验**（启动后端 + 面板 + 灌示例数据）：
+
 ```bash
-pnpm install
-pnpm test          # 全部单测
+pnpm install && pnpm build
+pnpm backend       # 启动后端 + 面板 http://127.0.0.1:3921
+pnpm seed          # 另开终端，灌入示例错误 + Web Vitals
+```
+
+完整使用指南（接入前端项目、跑自愈闭环、单独用各包、LLM/GitHub 配置）见 **[docs/USAGE.md](docs/USAGE.md)**。
+
+开发命令：
+
+```bash
+pnpm test          # 123 个测试
 pnpm typecheck     # 类型检查
 pnpm build         # 构建所有包
 ```

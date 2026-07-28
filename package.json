@@ -9,6 +9,8 @@
     "dev": "pnpm -r run dev",
     "test": "vitest run",
     "typecheck": "pnpm -r exec tsc --noEmit",
+    "backend": "node scripts/start-backend.mjs",
+    "seed": "node scripts/seed-demo.mjs",
     "demo": "npx --yes serve examples/demo-app -p 5179"
   },
   "devDependencies": {
