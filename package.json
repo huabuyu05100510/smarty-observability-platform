@@ -1,0 +1,25 @@
+{
+  "name": "smarty-observability-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "端到端前端可观测 + 诊断 + 自愈统一平台 —— 确定性×AI 混合，基于行业最佳实践（2026-07）",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "dev": "pnpm -r run dev",
+    "test": "vitest run",
+    "typecheck": "pnpm -r exec tsc --noEmit",
+    "demo": "npx --yes serve examples/demo-app -p 5179"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=8"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
