@@ -17,6 +17,7 @@ import { Reporter, type OfflineStore } from './reporter';
 import { createIdbOfflineStore } from './offline-store';
 import { installRequestMonitor } from './request';
 import { redactPayload, type RedactOptions } from '@monit/pii';
+import { HeadSampler, TailSampler, composeSamplers, type Sampler } from '@monit/sampling';
 
 export interface CollectorOptions {
   endpoint: string;
@@ -40,6 +41,8 @@ export interface CollectorOptions {
   slowThresholdMs?: number;
   /** PII 脱敏（默认开启；false 关闭，传对象自定义规则） */
   pii?: RedactOptions | false;
+  /** 自定义采样器（默认：head sampleRate + tail 兜底 error/慢请求必留） */
+  sampler?: Sampler;
 }
 
 export interface CollectorHandle {
@@ -72,7 +75,12 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
   });
   traceContext.startView();
 
-  // 2. reporter（带 IndexedDB 离线队列重试，非阻塞挂载）
+  // 2. reporter（带 IndexedDB 离线队列重试 + 采样，非阻塞挂载）
+  // 采样默认策略：head 按 sampleRate + tail 兜底（error/慢请求必留）
+  const sampler: Sampler = opts.sampler ?? composeSamplers(
+    new HeadSampler({ sampleRate: opts.sampleRate ?? 1 }),
+    new TailSampler({ sampleRate: 1, keepError: true, slowThresholdMs: opts.slowThresholdMs ?? 3000 }),
+  );
   const reporter = new Reporter({
     endpoint: opts.endpoint,
     release: opts.release,
@@ -80,6 +88,7 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     flushInterval: opts.flushInterval,
     offlineStore: opts.offlineStore,
     compress: opts.compress,
+    sampler,
   });
   reporter.start();
   if (!opts.offlineStore) {

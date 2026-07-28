@@ -13,6 +13,7 @@
  */
 
 import type { MonitorEvent } from '@monit/contracts'
+import type { Sampler } from '@monit/sampling'
 
 export interface OfflineQueueItem {
   id?: number
@@ -40,6 +41,8 @@ export interface ReporterOptions {
   maxAttempts?: number
   /** gzip 压缩（需 pako 可用） */
   compress?: boolean
+  /** 采样器（入队前 shouldKeep 决策；不传则全留） */
+  sampler?: Sampler
 }
 
 export class Reporter {
@@ -47,7 +50,7 @@ export class Reporter {
   private timer: ReturnType<typeof setInterval> | null = null
   private onlineHandler: (() => void) | null = null
   private readonly opts: Required<Pick<ReporterOptions, 'endpoint' | 'batchSize' | 'flushInterval' | 'maxAttempts'>> & {
-    release?: string; offlineStore?: OfflineStore; compress?: boolean
+    release?: string; offlineStore?: OfflineStore; compress?: boolean; sampler?: Sampler
   }
 
   constructor(opts: ReporterOptions) {
@@ -59,6 +62,7 @@ export class Reporter {
       release: opts.release,
       offlineStore: opts.offlineStore,
       compress: opts.compress,
+      sampler: opts.sampler,
     }
   }
 
@@ -76,6 +80,11 @@ export class Reporter {
   }
 
   enqueue(event: MonitorEvent): void {
+    // 采样：shouldKeep=false 则丢弃（不入队、不入离线队列）
+    if (this.opts.sampler && !this.opts.sampler.shouldKeep(event as never)) {
+      event.sampled = false
+      return
+    }
     this.queue.push(event)
     if (this.queue.length >= this.opts.batchSize) void this.flush()
   }

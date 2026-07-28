@@ -22,6 +22,7 @@
     "@monit/trace": "workspace:*",
     "@monit/fingerprint": "workspace:*",
     "@monit/pii": "workspace:*",
+    "@monit/sampling": "workspace:*",
     "pako": "^2.1.0"
   }
 }

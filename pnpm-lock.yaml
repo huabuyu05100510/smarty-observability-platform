@@ -41,6 +41,9 @@ importers:
       '@monit/pii':
         specifier: workspace:*
         version: link:../pii
+      '@monit/sampling':
+        specifier: workspace:*
+        version: link:../sampling
       '@monit/trace':
         specifier: workspace:*
         version: link:../trace
@@ -141,6 +144,8 @@ importers:
       '@monit/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/sampling: {}
 
   packages/trace:
     dependencies:
