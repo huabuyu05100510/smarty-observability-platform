@@ -56,26 +56,30 @@ export class Reporter {
     const batch = this.queue.splice(0, this.queue.length);
     const body = JSON.stringify(batch);
 
-    // 优先 sendBeacon（不阻塞卸载）
-    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
-      const blob = new Blob([body], { type: 'application/json' });
-      const ok = navigator.sendBeacon(this.opts.endpoint, blob);
-      if (ok) return;
-    }
-
-    // 回退 fetch keepalive
+    // 主：fetch keepalive。做正规 CORS preflight（跨源可靠），keepalive 也能在卸载时存活。
+    // 注意：不能用 sendBeacon(application/json)——sendBeacon 无法 preflight，
+    // 非 simple 的 application/json 跨源会被浏览器静默拦截（且 sendBeacon 返回 true 误导）。
     try {
-      await fetch(this.opts.endpoint, {
+      const res = await fetch(this.opts.endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
         keepalive: true,
       });
+      if (res.ok) return;
     } catch {
-      // 离线/失败：丢弃（P2 接 IndexedDB 重试）
-      // 重新入队首部，避免丢失（限流防溢出）
-      if (this.queue.length < 100) this.queue.unshift(...batch);
+      // fall through to sendBeacon fallback
     }
+
+    // 兜底：sendBeacon 用 text/plain（simple 请求，免 preflight，跨源可送达，卸载最稳）。
+    // 后端按 body 内容解析，不依赖 Content-Type。
+    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      const blob = new Blob([body], { type: 'text/plain' });
+      if (navigator.sendBeacon(this.opts.endpoint, blob)) return;
+    }
+
+    // 全失败：重新入队（限流防溢出），P2 接 IndexedDB 重试
+    if (this.queue.length < 100) this.queue.unshift(...batch);
   }
 
   stop(): void {

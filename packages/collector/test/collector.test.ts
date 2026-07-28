@@ -67,19 +67,20 @@ describe('Reporter', () => {
     reporter.stop();
   });
 
-  it('flushes on visibilitychange hidden', async () => {
-    const beacon = vi.fn(() => true);
-    // @ts-expect-error mock
-    navigator.sendBeacon = beacon;
+  it('flushes on visibilitychange hidden (fetch keepalive primary path)', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
     const reporter = new Reporter({ endpoint: 'https://ingest/x', flushInterval: 99999 });
     reporter.start();
     reporter.enqueue({ id: 'e1', type: 'error', subType: 'js', timestamp: 1, traceId: 't', spanId: 's', sessionId: 'sess', release: 'r', payload: {}, piiSafe: true, sampled: true });
     // 模拟 hidden
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
-    await new Promise(r => setTimeout(r, 10));
-    expect(beacon).toHaveBeenCalled();
+    await new Promise(r => setTimeout(r, 20));
+    expect(fetchSpy).toHaveBeenCalled();
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(init.keepalive).toBe(true);
     reporter.stop();
+    fetchSpy.mockRestore();
   });
 });
 
