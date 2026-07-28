@@ -5,6 +5,7 @@ import {
   buildReportSummary,
   buildPerfFlamegraph,
   correlateChange,
+  diagnoseWithCorrelation,
 } from '../src/index';
 import type { DiagnosticReport } from '@monit/contracts';
 
@@ -178,5 +179,39 @@ describe('correlateChange', () => {
     ];
     const cand = correlateChange(changes, { ...anomaly, spikeRatio: 100 });
     expect(cand!.confidence).toBeLessThanOrEqual(0.7);
+  });
+});
+
+describe('diagnoseWithCorrelation (multi-source candidates)', () => {
+  it('appends change-correlation candidate to the candidate chain, sorted by confidence', () => {
+    const report = makeReport({
+      errors: [{ id: 'e1', type: 'js', message: 'TypeError', stack: 'TypeError\n    at fn (app.js:10:5)', timestamp: 1 }],
+    });
+    const records = diagnoseWithCorrelation({
+      report,
+      changes: [
+        { id: 'c1', kind: 'deployment', at: report.createdAt - 60_000, release: 'v1.2.3', summary: 'deploy v1.2.3', commitSha: 'abc' },
+      ],
+      anomaly: { startedAt: report.createdAt, spikeRatio: 4, release: 'v1.2.3', metric: 'error_rate' },
+    });
+    expect(records.length).toBe(1);
+    const cand = records[0].candidates;
+    // 确定性 error.js 候选（0.8）+ 变更关联候选（<=0.7）
+    expect(cand.length).toBe(2);
+    // 按置信度降序：error.js(0.8) 应在前
+    expect(cand[0].kind).toBe('error.js');
+    expect(cand[1].kind).toBe('deployment');
+  });
+
+  it('no relevant change -> single deterministic candidate', () => {
+    const report = makeReport({
+      errors: [{ id: 'e1', type: 'js', message: 'x', timestamp: 1 }],
+    });
+    const records = diagnoseWithCorrelation({
+      report,
+      changes: [],
+      anomaly: { startedAt: report.createdAt, spikeRatio: 2 },
+    });
+    expect(records[0].candidates.length).toBe(1);
   });
 });

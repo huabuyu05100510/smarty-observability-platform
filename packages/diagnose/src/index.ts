@@ -246,4 +246,5 @@ export function buildReportSummary(report: DiagnosticReport): {
 }
 
 export { buildPerfFlamegraph } from './flamegraph';
-export { correlateChange, type ChangeEvent } from './change-correlation';
+export { correlateChange, type ChangeEvent, type AnomalySignal, type CorrelationOptions } from './change-correlation';
+export { diagnoseWithCorrelation, type DiagnoseWithCorrelationInput } from './full';

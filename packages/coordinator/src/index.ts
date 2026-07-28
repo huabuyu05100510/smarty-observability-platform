@@ -9,3 +9,4 @@ export { EventBus } from './event-bus';
 export { generatePatch, type PatchContext } from './llm-patch';
 export { createGithubPr, applyPatchesLocally, type GithubConfig } from './github-pr';
 export { createCoordinatorServer, type CoordinatorOptions, type CoordinatorHandle } from './server';
+export { runMrDraftTrack, type MrDraftTrackOptions, type MrDraftTrackResult, type MrDraftDecision } from './mr-draft-track';

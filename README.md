@@ -32,14 +32,17 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ L6 修复闭环  @monit/repair-agent + @monit/coordinator              │
+│ L6 修复闭环  @monit/repair-agent + @monit/coordinator + guardrails │
 │   diagnose → ★ verifyAdversarially → inject → regression-vote      │
 │   → ★ assessConfidence → 轨道A 热修 / 轨道B MR草稿                  │
 ├──────────────────────────────────────────────────────────────────┤
-│ L4 根因     @monit/diagnose（确定性规则 + 火焰图 + 变更关联）         │
+│ L4 根因     @monit/diagnose（确定性规则 + 火焰图 + 变更关联全量） │
 ├──────────────────────────────────────────────────────────────────┤
 │ L2 统一上下文 @monit/contracts（MonitorEvent 信封）                  │
 │              @monit/trace（W3C traceparent 注入）+ @monit/fingerprint│
+├──────────────────────────────────────────────────────────────────┤
+│ L1 采集     @monit/collector（Web Vitals+LoAF / error+指纹 / 面包屑 /  │
+│              reporter，产出带 traceId 的 MonitorEvent）              │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,9 +76,11 @@ Diagnoser(LLM) 生成根因 + 补丁
 | `@monit/contracts` | 统一 schema | MonitorEvent 信封 / AttributionCandidate 候选链 / PatchResult / ConfidenceTier |
 | `@monit/trace` | W3C trace 传播 | traceparent 编解码 + meta/cookie 继承 + fetch/XHR 注入 |
 | `@monit/fingerprint` | 错误指纹 | FNV-1a 栈指纹 × djb2 URL/类型指纹 双维合并 |
-| `@monit/diagnose` | 确定性 RCA | INP/error/long-task 归因 + 火焰图 + 变更关联（P1） |
+| `@monit/diagnose` | 确定性 RCA | INP/error/long-task 归因 + 火焰图 + 变更关联全量（多源候选链） |
 | `@monit/repair-agent` | 自愈引擎 | ★Verifier 对抗验证 + 回归投票 + 信心门禁 + 5 patch + sourcemap |
-| `@monit/coordinator` | MR 交付 | HTTP bus + LLM 补丁 + GitHub PR + 运行时热修 |
+| `@monit/coordinator` | MR 交付 | HTTP bus + LLM 补丁 + GitHub PR + ★MR 草稿闭环（轨道 B）+ 运行时热修 |
+| `@monit/guardrails` | 自愈护栏 | 测试充分性评估 + contamination 污染检测（防 SWE-bench 假阳性） |
+| `@monit/collector` | 浏览器采集 | Web Vitals+LoAF / error+指纹 / 面包屑 / reporter，产出 MonitorEvent |
 
 ## 用法
 
@@ -125,13 +130,15 @@ if (result.resolved && result.confidence?.canAutoApply) {
 1. **Verifier 反事实验证**（注入前，逻辑层防幻觉）
 2. **回归投票 3-replay ≥2**（注入后，经验层防偶发）
 3. **searchCode 真实存在校验**（防 LLM 编造补丁）
-4. **信心门禁**（改动局部 + 类型通过才自动 MR）
-5. **人审兜底**（全自动 MR <18%，半自动是现实范式）
+4. **测试充分性护栏**（`@monit/guardrails`：被改代码是否被测试覆盖，UTBoost 思路）
+5. **contamination 检测**（`@monit/guardrails`：补丁是否逐字/近似复现 gold patch，防数据污染）
+6. **信心门禁**（改动局部 + 类型通过才自动 MR；回归失败/Verifier 否决 = 永不自动）
+7. **人审兜底**（全自动 MR <18%，半自动是现实范式）
 
 ## 路线图
 
-- **P0（本仓库）**：契约 + trace + 指纹 + 诊断 + 自愈（Verifier 升级）+ coordinator，主链贯通 ✅
-- **P1（后续）**：变更关联 RCA 全量 + MR 草稿闭环 + 测试充分性护栏 + contamination 检测
+- **P0（已完成）**：契约 + trace + 指纹 + 诊断 + 自愈（Verifier 升级）+ coordinator，主链贯通 ✅
+- **P1（已完成）**：变更关联 RCA 全量 + MR 草稿闭环 + 测试充分性护栏 + contamination 检测 + 浏览器采集 SDK ✅
 - **P2（后续）**：LoAF 逐脚本归因 + 数据溯源 DAG + 差异火焰图 + LLM-RCA 残差融合对标 88.4%
 
 ## 致敬与借鉴

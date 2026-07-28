@@ -1,5 +1,5 @@
 {
-  "name": "@monit/coordinator",
+  "name": "@monit/collector",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,12 +14,12 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "dev": "tsup src/index.ts --format esm --dts --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@monit/contracts": "workspace:*",
-    "@monit/repair-agent": "workspace:*",
-    "@monit/diagnose": "workspace:*",
-    "@monit/guardrails": "workspace:*"
+    "@monit/trace": "workspace:*",
+    "@monit/fingerprint": "workspace:*"
   }
 }
