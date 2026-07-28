@@ -5,3 +5,5 @@ dist/
 coverage/
 .env
 .env.local
+# 本地密钥配置（写死但不进 git 历史，防泄漏）
+config/llm.config.json
