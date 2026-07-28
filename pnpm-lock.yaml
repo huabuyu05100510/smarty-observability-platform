@@ -65,6 +65,42 @@ importers:
         specifier: workspace:*
         version: link:../contracts
 
+  packages/e2e:
+    dependencies:
+      '@monit/backend':
+        specifier: workspace:*
+        version: link:../backend
+      '@monit/collector':
+        specifier: workspace:*
+        version: link:../collector
+      '@monit/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@monit/coordinator':
+        specifier: workspace:*
+        version: link:../coordinator
+      '@monit/diagnose':
+        specifier: workspace:*
+        version: link:../diagnose
+      '@monit/fingerprint':
+        specifier: workspace:*
+        version: link:../fingerprint
+      '@monit/guardrails':
+        specifier: workspace:*
+        version: link:../guardrails
+      '@monit/llm-rca':
+        specifier: workspace:*
+        version: link:../llm-rca
+      '@monit/provenance':
+        specifier: workspace:*
+        version: link:../provenance
+      '@monit/repair-agent':
+        specifier: workspace:*
+        version: link:../repair-agent
+      '@monit/trace':
+        specifier: workspace:*
+        version: link:../trace
+
   packages/fingerprint:
     dependencies:
       '@monit/contracts':

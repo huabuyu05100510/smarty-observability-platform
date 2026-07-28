@@ -1,0 +1,22 @@
+{
+  "name": "@monit/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@monit/contracts": "workspace:*",
+    "@monit/trace": "workspace:*",
+    "@monit/fingerprint": "workspace:*",
+    "@monit/collector": "workspace:*",
+    "@monit/diagnose": "workspace:*",
+    "@monit/repair-agent": "workspace:*",
+    "@monit/coordinator": "workspace:*",
+    "@monit/guardrails": "workspace:*",
+    "@monit/llm-rca": "workspace:*",
+    "@monit/backend": "workspace:*",
+    "@monit/provenance": "workspace:*"
+  }
+}

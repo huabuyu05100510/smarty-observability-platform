@@ -7,8 +7,9 @@ import {
   buildDiffFlamegraph,
   correlateChange,
   diagnoseWithCorrelation,
+  buildReportFromEvents,
 } from '../src/index';
-import type { DiagnosticReport, PerfFlamegraphData } from '@monit/contracts';
+import type { DiagnosticReport, PerfFlamegraphData, MonitorEvent } from '@monit/contracts';
 
 function makeReport(over: Partial<DiagnosticReport> = {}): DiagnosticReport {
   return {
@@ -255,5 +256,59 @@ describe('buildDiffFlamegraph (regression visualization)', () => {
     const after = makeFlame(400, 350);
     const diff = buildDiffFlamegraph(before, after);
     expect(diff.roots[0].trend).toBe('new');
+  });
+});
+
+describe('buildReportFromEvents (L3 -> L4 聚合胶水)', () => {
+  function evt(type: string, subType: string, payload: unknown): MonitorEvent {
+    return {
+      id: `${type}-${Math.random()}`, type: type as never, subType: subType as never,
+      timestamp: Date.now(), traceId: 'a'.repeat(32), spanId: 'b'.repeat(16),
+      sessionId: 'sess', release: 'v1', payload, piiSafe: true, sampled: true,
+    };
+  }
+
+  it('reduces error events into ErrorSignal[]', () => {
+    const report = buildReportFromEvents([
+      evt('error', 'js', { id: 'e1', type: 'js', message: 'boom', stack: 'Error\n    at fn (a.js:1:1)', timestamp: 1 }),
+    ]);
+    expect(report.errors.length).toBe(1);
+    expect(report.errors[0].message).toBe('boom');
+    expect(report.summary.worstSeverity).toBe('critical');
+  });
+
+  it('reduces INP vital into InpAttribution + loafEntries', () => {
+    const report = buildReportFromEvents([
+      evt('vital', 'inp', {
+        value: 320, rating: 'poor', inputDelay: 30, processingDuration: 250, presentationDelay: 40,
+        longAnimationFrameEntries: [{ id: 'l1', startTime: 0, duration: 200, scripts: [{ id: 's1', name: 'x', duration: 200, startTime: 0 }] }],
+      }),
+    ]);
+    expect(report.inp?.value).toBe(320);
+    expect(report.loafEntries.length).toBe(1);
+  });
+
+  it('reduces non-inp vitals into VitalMetric[]', () => {
+    const report = buildReportFromEvents([
+      evt('vital', 'lcp', { name: 'LCP', value: 2500, rating: 'good' }),
+      evt('vital', 'cls', { name: 'CLS', value: 0.05, rating: 'good' }),
+    ]);
+    expect(report.vitals.length).toBe(2);
+    expect(report.inp).toBeUndefined();
+  });
+
+  it('empty events -> info severity report', () => {
+    const report = buildReportFromEvents([]);
+    expect(report.errors.length).toBe(0);
+    expect(report.summary.worstSeverity).toBe('info');
+  });
+
+  it('feeds directly into analyzeRootCauses', () => {
+    const report = buildReportFromEvents([
+      evt('error', 'js', { id: 'e1', type: 'js', message: 'TypeError', stack: 'TypeError\n    at fn (a.js:1:1)', timestamp: 1 }),
+    ]);
+    const records = analyzeRootCauses(report);
+    expect(records.length).toBe(1);
+    expect(records[0].candidates[0].kind).toBe('error.js');
   });
 });
