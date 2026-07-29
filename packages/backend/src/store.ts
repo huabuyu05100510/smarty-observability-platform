@@ -9,6 +9,7 @@
  */
 
 import type { MonitorEvent, VitalMetric } from '@monit/contracts';
+import { buildReportFromEvents, analyzeRootCauses } from '@monit/diagnose';
 
 export interface ErrorGroup {
   fingerprint: string;
@@ -21,6 +22,8 @@ export interface ErrorGroup {
   lastSeen: number;
   sample: MonitorEvent;
   sessionsAffected: Set<string>;
+  /** 自动确定性根因（首次建组时算，闭环展示） */
+  rootCause?: { kind: string; confidence: number; evidence: string[]; suggestedHealIds: string[] };
 }
 
 export interface VitalAggregation {
@@ -82,6 +85,20 @@ export class EventStore {
         sample: e,
         sessionsAffected: new Set(),
       };
+      // 自动确定性根因（闭环：错误一流入即算根因，面板自动展示）
+      try {
+        const report = buildReportFromEvents([e]);
+        const records = analyzeRootCauses(report);
+        const top = records[0]?.candidates[0];
+        if (top) {
+          group.rootCause = {
+            kind: top.kind,
+            confidence: top.confidence,
+            evidence: top.evidence,
+            suggestedHealIds: top.suggestedHealIds,
+          };
+        }
+      } catch { /* 根因计算失败不影响 ingest */ }
       this.errorGroups.set(fp, group);
     }
     group.count++;
