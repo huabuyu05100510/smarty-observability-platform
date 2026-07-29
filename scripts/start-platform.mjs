@@ -27,11 +27,12 @@ const llmConfig = {
   temperature: llmCfg.temperature ?? 0.2,
 };
 
-// 1. backend（数据面 + React 面板 + JSONL 持久化）
+// 1. backend（数据面 + React 面板 + JSONL 持久化 + 自动 AI 诊断）
 const backend = createBackendServer({
   port: 3921,
   dbPath: './data/events.jsonl',
   dashboardFile: join(__dirname, '..', 'platform', 'frontend', 'index.html'),
+  llmConfig,
 });
 // 2. coordinator（自愈 HTTP 总线，接 LLM）
 const coordinator = createCoordinatorServer({ port: 3920, llmConfig });

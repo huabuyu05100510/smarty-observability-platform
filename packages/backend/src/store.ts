@@ -24,6 +24,10 @@ export interface ErrorGroup {
   sessionsAffected: Set<string>;
   /** 自动确定性根因（首次建组时算，闭环展示） */
   rootCause?: { kind: string; confidence: number; evidence: string[]; suggestedHealIds: string[] };
+  /** 自动 AI 诊断（错误流入后异步调 LLM，闭环第二轨） */
+  aiDiagnosis?: { diagnosis: string; suggestedFix: string; confidence: number; ts: number };
+  /** 标记 AI 诊断已调度（避免重复触发） */
+  aiDiagnosisPending?: boolean;
 }
 
 export interface VitalAggregation {
@@ -147,6 +151,12 @@ export class EventStore {
   errorGroup(fingerprint: string): ErrorGroup | undefined {
     const g = this.errorGroups.get(fingerprint);
     return g ? { ...g, sessionsAffected: new Set(g.sessionsAffected) } : undefined;
+  }
+
+  /** 设置 AI 诊断（异步 LLM 调用后回写） */
+  setAiDiagnosis(fp: string, diag: NonNullable<ErrorGroup['aiDiagnosis']>): void {
+    const g = this.errorGroups.get(fp);
+    if (g) g.aiDiagnosis = diag;
   }
 
   /** 该错误分组的所有事件 */

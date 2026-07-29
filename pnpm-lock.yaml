@@ -41,6 +41,9 @@ importers:
       '@monit/diagnose':
         specifier: workspace:*
         version: link:../diagnose
+      '@monit/repair-agent':
+        specifier: workspace:*
+        version: link:../repair-agent
       source-map-js:
         specifier: ^1.2.1
         version: 1.2.1

@@ -19,6 +19,7 @@
   "dependencies": {
     "@monit/contracts": "workspace:*",
     "@monit/diagnose": "workspace:*",
+    "@monit/repair-agent": "workspace:*",
     "source-map-js": "^1.2.1"
   }
 }

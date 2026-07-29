@@ -11,10 +11,12 @@
  */
 
 import http from 'node:http';
-import { EventStore } from './store';
+import type { MonitorEvent } from '@monit/contracts';
+import { EventStore, type ErrorGroup } from './store';
 import { SourcemapStore } from './sourcemap';
 import { SqlitePersister } from './persist';
 import { dashboardHtml } from './dashboard';
+import { chat, type LLMConfig } from '@monit/repair-agent';
 
 export interface BackendOptions {
   port?: number;
@@ -27,6 +29,8 @@ export interface BackendOptions {
   dbPath?: string;
   /** 可选 React 面板 HTML 文件路径（设了则作为 / 主面板，替代内置简单 HTML） */
   dashboardFile?: string;
+  /** 可选 LLM 配置（设了则错误流入后自动调 AI 出诊断，fire-and-forget） */
+  llmConfig?: LLMConfig;
 }
 
 export interface BackendHandle {
@@ -78,6 +82,22 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
             : [];
         store.ingest(events as never);
         persister?.saveEvents(events as never);
+
+        // 自动 AI 诊断（fire-and-forget）：新错误组触发 MiniMax 出诊断
+        if (opts.llmConfig) {
+          for (const e of events as MonitorEvent[]) {
+            const fp = e.fingerprint?.primary;
+            if (e.type !== 'error' || !fp) continue;
+            const g = store.errorGroup(fp);
+            if (!g || g.aiDiagnosisPending || g.aiDiagnosis) continue;
+            g.aiDiagnosisPending = true;
+            void runAiDiagnosis(opts.llmConfig, g).then((diag) => {
+              if (diag) store.setAiDiagnosis(fp, diag);
+              if (g) g.aiDiagnosisPending = false;
+            });
+          }
+        }
+
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ ok: true, ingested: events.length }));
         return;
@@ -195,4 +215,35 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
     store,
     close: () => new Promise((resolve) => { server.close(() => { persister?.close(); resolve(); }); }),
   };
+}
+
+/**
+ * 自动 AI 诊断（后台触发）。fire-and-forget，错误流即用 @monit/repair-agent chat 调 LLM 出诊断+修复建议。
+ * 失败不影响 ingest。
+ */
+async function runAiDiagnosis(
+  llmConfig: LLMConfig,
+  g: ErrorGroup,
+): Promise<{ diagnosis: string; suggestedFix: string; confidence: number; ts: number } | null> {
+  try {
+    const payload = g.sample.payload as { message?: string; stack?: string };
+    const userPrompt = `你是资深前端工程师。诊断以下错误并给出最小修复建议（2-3 句）。
+
+错误: ${payload?.message ?? '未知'}
+${payload?.stack ? `栈: ${payload.stack.slice(0, 600)}` : ''}
+
+用 ===DIAGNOSIS=== 和 ===FIX=== 两段输出，每段纯文本。`;
+
+    const res = await chat(llmConfig, [
+      { role: 'system', content: '基于堆栈给出根因+最小修复。不要复述问题本身。' },
+      { role: 'user', content: userPrompt },
+    ]);
+
+    const d = res.content.match(/===DIAGNOSIS===\s*([\s\S]*?)(?:===FIX===|$)/i)?.[1]?.trim() ?? res.content.slice(0, 200);
+    const f = res.content.match(/===FIX===\s*([\s\S]*?)$/i)?.[1]?.trim() ?? '';
+
+    return { diagnosis: d || '(无诊断)', suggestedFix: f, confidence: 0.7, ts: Date.now() };
+  } catch {
+    return null;
+  }
 }

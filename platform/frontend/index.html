@@ -150,7 +150,12 @@ function ErrorDetail({fp,onBack}){
         resolved&&resolved.length>0&&React.createElement('div',{style:{marginTop:8}},React.createElement('h2',null,'还原后源码位置'),resolved.map((f,i)=>React.createElement('div',{key:i,style:{fontFamily:'monospace',fontSize:12,padding:'4px 0'},className:f.resolved?'good':'poor'},(f.resolved?'✓ ':'✗ ')+(f.source||'?')+':'+(f.line||'?')+':'+(f.column||'?'))))),
       React.createElement('div',null,
         React.createElement('div',{className:'card'},React.createElement('h2',null,'面包屑 ('+((s?.breadcrumbs||[]).length)+')'),(s?.breadcrumbs||[]).length===0?React.createElement('div',{className:'empty'},'无'):s.breadcrumbs.map((b,i)=>React.createElement('div',{key:i,style:{fontSize:11,color:'#8b949e',padding:'2px 0'}},b.type+': '+b.message))),
-        React.createElement('div',{className:'card ai'},React.createElement('h2',null,'AI 自愈诊断 ',React.createElement('button',{className:'btn',onClick:diagnose,disabled:aiL},aiL?'分析中...':'MiniMax 诊断')),ai&&React.createElement('pre',null,JSON.stringify(ai,null,2))),
+        React.createElement('div',{className:'card ai'},React.createElement('h2',null,'AI 诊断（MiniMax，自动触发）',
+          data?.group?.aiDiagnosisPending ? React.createElement('span',{className:'badge',style:{background:'#d2992233'}},React.createElement('span',{style:{display:'inline-block',width:8,height:8,borderRadius:'50%',background:'#d29922',marginRight:6}}),'诊断中...') :
+          data?.group?.aiDiagnosis ? React.createElement('span',{className:'badge'},'conf '+(data.group.aiDiagnosis.confidence*100|0)+'%') :
+          React.createElement('span',{className:'badge'},'待触发')),
+        data?.group?.aiDiagnosis ? React.createElement('div',{style:{marginBottom:8}},React.createElement('b',null,'根因: '),data.group.aiDiagnosis.diagnosis) : data?.group?.aiDiagnosisPending ? React.createElement('div',{className:'empty'},'MiniMax 分析中...') : React.createElement('div',{className:'empty'},'错误一流入即自动触发'),
+        data?.group?.aiDiagnosis?.suggestedFix && React.createElement('div',{style:{marginTop:6,padding:8,background:'#0d1117',borderRadius:4,fontSize:12,whiteSpace:'pre-wrap'}},React.createElement('b',null,'建议修复:'),'\n'+data.group.aiDiagnosis.suggestedFix)),
       ),
     ),
   );
