@@ -162,6 +162,24 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
         return;
       }
 
+      // GET /api/health - 平台自检（稳定性：随时能看是否健康）
+      if (url === '/api/health' && method === 'GET') {
+        res.setHeader('Content-Type', 'application/json');
+        const totalEvents = store.recentEvents(9999).length;
+        const errorGroups = store.errorGroupsList().length;
+        const sessions = store.sessionsList().length;
+        const aiPending = store.errorGroupsList().filter(g => g.aiDiagnosisPending).length;
+        res.end(JSON.stringify({
+          ok: true,
+          uptime: process.uptime(),
+          events: totalEvents,
+          errorGroups,
+          sessions,
+          aiDiagnosisPending: aiPending,
+        }));
+        return;
+      }
+
       // POST /api/sourcemaps/upload - 上传 .map（body 为 map 文本；query: appId/version/filename）
       if (url.startsWith('/api/sourcemaps/upload') && method === 'POST') {
         const u = new URL(url, 'http://x');
@@ -220,11 +238,14 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
 /**
  * 自动 AI 诊断（后台触发）。fire-and-forget，错误流即用 @monit/repair-agent chat 调 LLM 出诊断+修复建议。
  * 失败不影响 ingest。
+ *
+ * 鲁棒性：LLM 可能不严格遵循 ===DIAGNOSIS===/===FIX=== 格式。优先结构化解析；
+ * 解析结果过短或无标记时，兜底用原始 LLM 输出（confidence 标低），不静默丢。
  */
 async function runAiDiagnosis(
   llmConfig: LLMConfig,
   g: ErrorGroup,
-): Promise<{ diagnosis: string; suggestedFix: string; confidence: number; ts: number } | null> {
+): Promise<{ diagnosis: string; suggestedFix: string; confidence: number; ts: number; formatMatched: boolean } | null> {
   try {
     const payload = g.sample.payload as { message?: string; stack?: string };
     const userPrompt = `你是资深前端工程师。诊断以下错误并给出最小修复建议（2-3 句）。
@@ -232,17 +253,34 @@ async function runAiDiagnosis(
 错误: ${payload?.message ?? '未知'}
 ${payload?.stack ? `栈: ${payload.stack.slice(0, 600)}` : ''}
 
-用 ===DIAGNOSIS=== 和 ===FIX=== 两段输出，每段纯文本。`;
+严格用以下格式输出（不要其他内容）：
+===DIAGNOSIS===
+<根因>
+===FIX===
+<最小修复>`;
 
     const res = await chat(llmConfig, [
-      { role: 'system', content: '基于堆栈给出根因+最小修复。不要复述问题本身。' },
+      { role: 'system', content: '只输出 ===DIAGNOSIS=== 和 ===FIX=== 两段。基于堆栈，不复述问题。' },
       { role: 'user', content: userPrompt },
     ]);
 
-    const d = res.content.match(/===DIAGNOSIS===\s*([\s\S]*?)(?:===FIX===|$)/i)?.[1]?.trim() ?? res.content.slice(0, 200);
+    const d = res.content.match(/===DIAGNOSIS===\s*([\s\S]*?)(?:===FIX===|$)/i)?.[1]?.trim() ?? '';
     const f = res.content.match(/===FIX===\s*([\s\S]*?)$/i)?.[1]?.trim() ?? '';
+    const formatMatched = d.length >= 8 && f.length >= 4;
 
-    return { diagnosis: d || '(无诊断)', suggestedFix: f, confidence: 0.7, ts: Date.now() };
+    // 兜底：格式不匹配时，用原始 LLM 输出作为诊断（标低置信，不静默丢）
+    const diagnosis = formatMatched
+      ? d
+      : (res.content.trim().slice(0, 300) || '(LLM 无输出)');
+    const suggestedFix = formatMatched ? f : '(未按格式输出，请人工审查)';
+
+    return {
+      diagnosis,
+      suggestedFix,
+      confidence: formatMatched ? 0.7 : 0.4,
+      ts: Date.now(),
+      formatMatched,
+    };
   } catch {
     return null;
   }
