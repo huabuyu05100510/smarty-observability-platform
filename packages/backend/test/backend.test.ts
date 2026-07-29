@@ -70,6 +70,37 @@ describe('EventStore', () => {
     store.ingest([makeErrorEvent('fp1', 'a'), makeErrorEvent('fp1', 'b'), makeErrorEvent('fp2', 'c')]);
     expect(store.eventsForFingerprint('fp1').length).toBe(2);
   });
+
+  it('errorTrend buckets errors by time', () => {
+    const store = new EventStore();
+    const now = Date.now();
+    store.ingest([
+      { ...makeErrorEvent('fp1', 'x', 's', now - 1000), timestamp: now - 1000 },
+      { ...makeErrorEvent('fp1', 'x', 's', now - 500), timestamp: now - 500 },
+    ]);
+    const trend = store.errorTrend(24, 60 * 60 * 1000);
+    expect(trend.length).toBe(24);
+    expect(trend.reduce((s, b) => s + b.count, 0)).toBe(2);
+  });
+
+  it('errorStats counts by subType', () => {
+    const store = new EventStore();
+    store.ingest([makeErrorEvent('fp1', 'a'), makeErrorEvent('fp2', 'b')]);
+    const stats = store.errorStats();
+    expect(stats['js']).toBe(2);
+  });
+
+  it('releaseBreakdown buckets by release', () => {
+    const store = new EventStore();
+    store.ingest([
+      { ...makeErrorEvent('fp1', 'a', 's1', 1), release: 'v1' },
+      { ...makeErrorEvent('fp2', 'b', 's2', 2), release: 'v2' },
+      { ...makeErrorEvent('fp3', 'c', 's1', 3), release: 'v1' },
+    ]);
+    const rb = store.releaseBreakdown();
+    expect(rb.find(r => r.release === 'v1')?.errors).toBe(2);
+    expect(rb.find(r => r.release === 'v1')?.sessions).toBe(1);
+  });
 });
 
 describe('backend server', () => {

@@ -137,6 +137,46 @@ export class EventStore {
     return this.events.filter(e => e.fingerprint?.primary === fingerprint);
   }
 
+  /** 错误趋势：按时间桶聚合 error 事件数（默认 24 桶，覆盖最近窗口） */
+  errorTrend(buckets = 24, windowMs = 24 * 60 * 60 * 1000): Array<{ ts: number; count: number }> {
+    const now = Date.now();
+    const start = now - windowMs;
+    const bucketMs = windowMs / buckets;
+    const counts = new Array(buckets).fill(0);
+    for (const e of this.events) {
+      if (e.type !== 'error' || e.timestamp < start) continue;
+      const idx = Math.min(buckets - 1, Math.floor((e.timestamp - start) / bucketMs));
+      counts[idx]++;
+    }
+    return counts.map((count, i) => ({ ts: start + i * bucketMs, count }));
+  }
+
+  /** 错误按 subType 分布 */
+  errorStats(): Record<string, number> {
+    const stats: Record<string, number> = {};
+    for (const e of this.events) {
+      if (e.type !== 'error') continue;
+      stats[e.subType] = (stats[e.subType] ?? 0) + 1;
+    }
+    return stats;
+  }
+
+  /** 按 release 分桶（错误数 + 事件数 + 受影响 session） */
+  releaseBreakdown(): Array<{ release: string; errors: number; events: number; sessions: number }> {
+    const map = new Map<string, { errors: number; events: number; sessions: Set<string> }>();
+    for (const e of this.events) {
+      const r = e.release ?? 'unknown';
+      const cur = map.get(r) ?? { errors: 0, events: 0, sessions: new Set<string>() };
+      cur.events++;
+      if (e.type === 'error') cur.errors++;
+      cur.sessions.add(e.sessionId);
+      map.set(r, cur);
+    }
+    return [...map.entries()]
+      .map(([release, v]) => ({ release, errors: v.errors, events: v.events, sessions: v.sessions.size }))
+      .sort((a, b) => b.events - a.events);
+  }
+
   /** vital 聚合 */
   vitalsAggregation(): VitalAggregation[] {
     const out: VitalAggregation[] = [];

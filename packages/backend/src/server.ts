@@ -86,7 +86,34 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
       // GET /api/errors
       if (url === '/api/errors' && method === 'GET') {
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ groups: store.errorGroupsList() }));
+        // sessionsAffected Set -> JSON 友好（数量 + 数组）
+        const groups = store.errorGroupsList().map(g => ({
+          ...g,
+          affectedSessions: g.sessionsAffected.size,
+          sessionsAffected: undefined,
+        }));
+        res.end(JSON.stringify({ groups }));
+        return;
+      }
+
+      // GET /api/errors/trend
+      if (url === '/api/errors/trend' && method === 'GET') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ trend: store.errorTrend() }));
+        return;
+      }
+
+      // GET /api/errors/stats（按 subType 分布）
+      if (url === '/api/errors/stats' && method === 'GET') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ stats: store.errorStats() }));
+        return;
+      }
+
+      // GET /api/releases（release 分桶）
+      if (url === '/api/releases' && method === 'GET') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ releases: store.releaseBreakdown() }));
         return;
       }
 
