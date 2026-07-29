@@ -76,6 +76,34 @@ function Detail({ fp, onBack }) {
   const [resolved, setResolved] = us(null);
   const [patch, setPatch] = us(null);
   const [busy, setBusy] = us(false);
+  const [hotfixBusy, setHotfixBusy] = us(false);
+  const hotfix = async () => {
+    setHotfixBusy(true);
+    try {
+      const keyword = s?.message?.slice(0, 30) || '';
+      // 后台用 chrome.scripting.executeScript 注入错误边界（轨道 A：运行时热修）
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (kw) => {
+          // 错误边界 patch：按关键字吞掉同种错误（来源 collector patch-executor 的 error-boundary）
+          window.__monit_hotfix = (window.__monit_hotfix || 0) + 1;
+          const KW = kw;
+          window.addEventListener('error', function (e) {
+            if (e.message && e.message.indexOf(KW) !== -1) { e.preventDefault(); e.stopImmediatePropagation(); }
+          }, true);
+          window.addEventListener('unhandledrejection', function (e) {
+            const m = e.reason && (e.reason.message || String(e.reason));
+            if (m && m.indexOf(KW) !== -1) { e.preventDefault(); }
+          });
+          return 'hotfix_' + window.__monit_hotfix + '_installed, keyword=' + kw.slice(0, 20);
+        },
+        args: [keyword],
+      });
+      alert('运行时热修已注入：当前页面错误边界已按关键字 "' + keyword + '" 拦截');
+    } catch (e) { alert('热修失败: ' + e.message); }
+    setHotfixBusy(false);
+  };
   ue(() => { api('/api/errors/' + encodeURIComponent(fp)).then(d => { setData(d); setResolved(null); setPatch(null); }); const t = setInterval(() => api('/api/errors/' + encodeURIComponent(fp)).then(d => setData(d)), 3000); return () => clearInterval(t); }, [fp]);
   const g = data?.group;
   const rc = g?.rootCause;
@@ -111,7 +139,8 @@ function Detail({ fp, onBack }) {
     ) : null,
     React.createElement('div', { style: { marginTop: 10 } },
       React.createElement('button', { className: 'btn sec', onClick: resolve, style: { marginRight: 6 } }, 'sourcemap 还原'),
-      React.createElement('button', { className: 'btn', onClick: triggerHeal, disabled: busy }, busy ? '生成中...' : '🛠 触发自愈 MR'),
+      React.createElement('button', { className: 'btn', onClick: triggerHeal, disabled: busy, style: { marginRight: 6 } }, busy ? '生成中...' : '🛠 触发自愈 MR'),
+      React.createElement('button', { className: 'btn sec', onClick: hotfix, disabled: hotfixBusy }, hotfixBusy ? '注入中...' : '⚡ 运行时热修'),
     ),
     resolved && resolved.length > 0 && React.createElement('div', { style: { marginTop: 8 } },
       React.createElement('h3', null, '还原源码位置'),
