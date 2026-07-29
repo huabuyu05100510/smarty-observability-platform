@@ -13,6 +13,7 @@
 import http from 'node:http';
 import { EventStore } from './store';
 import { SourcemapStore } from './sourcemap';
+import { SqlitePersister } from './persist';
 import { dashboardHtml } from './dashboard';
 
 export interface BackendOptions {
@@ -22,6 +23,8 @@ export interface BackendOptions {
   corsOrigin?: string;
   /** 可选 GitHub raw 回退基址（sourcemap 远端获取） */
   githubRawBase?: string;
+  /** 可选 SQLite 持久化路径（不传则纯内存）；:memory: 为内存 SQLite */
+  dbPath?: string;
 }
 
 export interface BackendHandle {
@@ -42,6 +45,12 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
   const store = new EventStore(10000);
   const sourcemaps = new SourcemapStore({ githubRawBase: opts.githubRawBase });
+  // SQLite 持久化（可选）：启动时 hydrate，ingest 时落盘
+  const persister = opts.dbPath ? new SqlitePersister({ dbPath: opts.dbPath }) : null;
+  if (persister) {
+    const historical = persister.loadAll();
+    if (historical.length > 0) store.ingest(historical);
+  }
   const port = opts.port ?? 3921;
   const host = opts.host ?? '127.0.0.1';
   const corsOrigin = opts.corsOrigin ?? '*';
@@ -66,6 +75,7 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
             ? (parsed as { events: unknown[] }).events
             : [];
         store.ingest(events as never);
+        persister?.saveEvents(events as never);
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ ok: true, ingested: events.length }));
         return;
@@ -147,6 +157,6 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
   return {
     server,
     store,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: () => new Promise((resolve) => { server.close(() => { persister?.close(); resolve(); }); }),
   };
 }

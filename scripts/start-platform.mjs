@@ -27,8 +27,8 @@ const llmConfig = {
   temperature: llmCfg.temperature ?? 0.2,
 };
 
-// 1. backend（数据面 + 面板）
-const backend = createBackendServer({ port: 3921 });
+// 1. backend（数据面 + 面板 + JSONL 持久化）
+const backend = createBackendServer({ port: 3921, dbPath: './data/events.jsonl' });
 // 2. coordinator（自愈 HTTP 总线，接 LLM）
 const coordinator = createCoordinatorServer({ port: 3920, llmConfig });
 

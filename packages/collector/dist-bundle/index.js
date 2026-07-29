@@ -1051,6 +1051,155 @@ function installRequestMonitor(opts, cb) {
   } };
 }
 
+// src/replay.ts
+var DEFAULT_WINDOW_MS = 3e4;
+var IGNORE_TAGS = /* @__PURE__ */ new Set(["SCRIPT", "STYLE", "NOSCRIPT"]);
+var Recorder = class {
+  events = [];
+  startedAt = 0;
+  endedAt = 0;
+  observer = null;
+  nodeIds = /* @__PURE__ */ new WeakMap();
+  nextId = 1;
+  inputHandler = null;
+  opts;
+  installed = false;
+  constructor(opts = {}) {
+    this.opts = {
+      windowMs: opts.windowMs ?? DEFAULT_WINDOW_MS,
+      maskInputs: opts.maskInputs ?? true,
+      recordInputs: opts.recordInputs ?? true
+    };
+  }
+  install() {
+    if (this.installed || typeof document === "undefined")
+      return;
+    this.installed = true;
+    this.startedAt = Date.now();
+    this.events.push({ type: "snapshot", timestamp: this.startedAt, data: this.serialize(document.documentElement) });
+    this.observer = new MutationObserver((mutations) => this.handleMutations(mutations));
+    this.observer.observe(document, { childList: true, attributes: true, characterData: true, subtree: true });
+    if (this.opts.recordInputs) {
+      this.inputHandler = (e) => this.handleInput(e);
+      document.addEventListener("input", this.inputHandler, true);
+    }
+  }
+  idOf(node) {
+    let id = this.nodeIds.get(node);
+    if (id === void 0) {
+      id = this.nextId++;
+      this.nodeIds.set(node, id);
+    }
+    return id;
+  }
+  serialize(node) {
+    const id = this.idOf(node);
+    if (node.nodeType === 3)
+      return { nodeType: 3, id, textContent: (node.textContent ?? "").slice(0, 5e3) };
+    if (node.nodeType === 8)
+      return { nodeType: 8, id, textContent: node.textContent ?? "" };
+    if (node.nodeType !== 1)
+      return { nodeType: node.nodeType, id };
+    const el = node;
+    const tagName = el.tagName;
+    if (IGNORE_TAGS.has(tagName))
+      return { nodeType: 1, id, tagName: tagName.toLowerCase(), attributes: {} };
+    const attributes = {};
+    for (let i = 0; i < el.attributes.length; i++) {
+      const a = el.attributes[i];
+      if (!["value", "data-monit-record"].includes(a.name))
+        attributes[a.name] = a.value;
+    }
+    const children = [];
+    for (let i = 0; i < el.childNodes.length; i++)
+      children.push(this.serialize(el.childNodes[i]));
+    return { nodeType: 1, id, tagName: tagName.toLowerCase(), attributes, children };
+  }
+  handleMutations(mutations) {
+    const ts = Date.now();
+    this.endedAt = ts;
+    const data = { adds: [], removes: [], attrs: [], texts: [] };
+    for (const m of mutations) {
+      const parentId = this.idOf(m.target);
+      if (m.type === "childList") {
+        m.addedNodes.forEach((n) => data.adds.push({ parentId, node: this.serialize(n) }));
+        m.removedNodes.forEach((n) => data.removes.push({ parentId, id: this.idOf(n) }));
+      } else if (m.type === "attributes" && m.attributeName) {
+        const el = m.target;
+        data.attrs.push({ id: parentId, name: m.attributeName, newValue: el.getAttribute(m.attributeName) ?? "" });
+      } else if (m.type === "characterData") {
+        data.texts.push({ id: parentId, newValue: (m.target.textContent ?? "").slice(0, 5e3) });
+      }
+    }
+    if (data.adds.length || data.removes.length || data.attrs.length || data.texts.length) {
+      this.events.push({ type: "mutation", timestamp: ts, data });
+      this.trim();
+    }
+  }
+  handleInput(e) {
+    const target = e.target;
+    if (!target || !("value" in target))
+      return;
+    const ts = Date.now();
+    const explicit = target.getAttribute?.("data-monit-record") === "value";
+    const masked = this.opts.maskInputs && !explicit;
+    this.events.push({
+      type: "input",
+      timestamp: ts,
+      data: {
+        id: this.idOf(target),
+        valueLength: String(target.value ?? "").length,
+        masked,
+        ...explicit ? { value: String(target.value ?? "") } : {},
+        selector: describeSelector(target)
+      }
+    });
+    this.trim();
+  }
+  /** 裁剪到 windowMs 窗口（保最近 N 秒）；snapshot 若被裁掉则补一条新 snapshot */
+  trim() {
+    const cutoff = Date.now() - this.opts.windowMs;
+    const firstKept = this.events.findIndex((e) => e.timestamp >= cutoff);
+    if (firstKept > 0) {
+      const dropped = this.events.slice(0, firstKept);
+      this.events = this.events.slice(firstKept);
+      if (dropped.some((e) => e.type === "snapshot") && typeof document !== "undefined") {
+        this.events.unshift({ type: "snapshot", timestamp: this.events[0]?.timestamp ?? Date.now(), data: this.serialize(document.documentElement) });
+      }
+    }
+  }
+  /** 取当前窗口内的回放数据（错误触发时塞 payload.sessionReplay） */
+  getSnapshot() {
+    return {
+      startedAt: this.startedAt,
+      endedAt: this.endedAt || Date.now(),
+      events: [...this.events],
+      nodeCount: this.nextId - 1
+    };
+  }
+  clear() {
+    this.events = [];
+    this.startedAt = Date.now();
+    this.endedAt = 0;
+  }
+  uninstall() {
+    this.observer?.disconnect();
+    this.observer = null;
+    if (this.inputHandler && typeof document !== "undefined") {
+      document.removeEventListener("input", this.inputHandler, true);
+    }
+    this.inputHandler = null;
+    this.events = [];
+    this.installed = false;
+  }
+};
+function describeSelector(el) {
+  const tag = el.tagName?.toLowerCase() ?? "unknown";
+  const id = el.id ? `#${el.id}` : "";
+  const cls = el.className && typeof el.className === "string" ? `.${el.className.split(/\s+/).slice(0, 2).join(".")}` : "";
+  return `${tag}${id}${cls}`;
+}
+
 // ../pii/dist/index.js
 var DEFAULT_PATTERNS = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
@@ -1230,6 +1379,8 @@ function initCollector(opts) {
   }
   const breadcrumbs = new BreadcrumbCollector(50);
   breadcrumbs.install();
+  const replay = opts.replay === false ? null : new Recorder(opts.replay ?? {});
+  replay?.install();
   const traceId = traceContext.traceId ?? "";
   const makeEvent = (type, subType, payload, fingerprint, extraTags) => {
     const sampled = Math.random() < sampleRate;
@@ -1264,7 +1415,8 @@ function initCollector(opts) {
     onError: (signal, fingerprint) => {
       const event = makeEvent("error", signal.type, {
         ...signal,
-        breadcrumbs: breadcrumbs.recent()
+        breadcrumbs: breadcrumbs.recent(),
+        ...replay ? { sessionReplay: replay.getSnapshot() } : {}
       }, fingerprint);
       reporter.enqueue(event);
     }
@@ -1296,6 +1448,7 @@ function initCollector(opts) {
       uninstallErrors();
       requestHandle.uninstall();
       breadcrumbs.uninstall();
+      replay?.uninstall();
       reporter.stop();
       traceContext.reset();
     },
