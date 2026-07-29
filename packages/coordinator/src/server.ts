@@ -62,6 +62,12 @@ export function createCoordinatorServer(opts: CoordinatorOptions = {}): Coordina
   const host = opts.host ?? '127.0.0.1';
 
   const server = http.createServer(async (req, res) => {
+    // CORS（面板 :3921 调 :3920 做自愈诊断需要跨源）
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') { res.statusCode = 204; return res.end(); }
+
     res.setHeader('Content-Type', 'application/json');
     const method = req.method ?? 'GET';
     const url = req.url ?? '/';

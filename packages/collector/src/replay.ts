@@ -101,7 +101,7 @@ export class Recorder {
 
   private serialize(node: Node): SerializedNode {
     const id = this.idOf(node)
-    if (node.nodeType === 3) return { nodeType: 3, id, textContent: (node.textContent ?? '').slice(0, 5000) }
+    if (node.nodeType === 3) return { nodeType: 3, id, textContent: (node.textContent ?? '').slice(0, 500) }
     if (node.nodeType === 8) return { nodeType: 8, id, textContent: node.textContent ?? '' }
     if (node.nodeType !== 1) return { nodeType: node.nodeType, id }
 
@@ -133,7 +133,7 @@ export class Recorder {
         const el = m.target as Element
         data.attrs.push({ id: parentId, name: m.attributeName, newValue: el.getAttribute(m.attributeName) ?? '' })
       } else if (m.type === 'characterData') {
-        data.texts.push({ id: parentId, newValue: (m.target.textContent ?? '').slice(0, 5000) })
+        data.texts.push({ id: parentId, newValue: (m.target.textContent ?? '').slice(0, 500) })
       }
     }
     if (data.adds.length || data.removes.length || data.attrs.length || data.texts.length) {

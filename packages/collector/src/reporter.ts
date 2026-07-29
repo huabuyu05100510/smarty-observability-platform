@@ -183,14 +183,16 @@ async function sendOnce(
     } catch { /* pako 不可用，降级 */ }
   }
 
-  // 主：fetch keepalive（跨源正规 preflight，能读 status 触发离线回退）
+  // 主：fetch。keepalive 能在卸载时存活，但有 ~64KB body 上限——
+  // 超限时改普通 fetch（无 64KB 限，但卸载时可能被取消）。
   if (typeof fetch === 'function') {
+    const big = body.length > 60000
     try {
       const resp = await fetch(dsn, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
-        keepalive: true,
+        ...(big ? {} : { keepalive: true }),
       })
       if (resp.ok) return true
       // non-2xx：继续尝试 sendBeacon 兜底（某些 4xx 可能仍可送达）

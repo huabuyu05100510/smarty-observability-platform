@@ -758,12 +758,13 @@ async function sendOnce(dsn, events, opts) {
     }
   }
   if (typeof fetch === "function") {
+    const big = body.length > 6e4;
     try {
       const resp = await fetch(dsn, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
-        keepalive: true
+        ...big ? {} : { keepalive: true }
       });
       if (resp.ok)
         return true;
@@ -1095,7 +1096,7 @@ var Recorder = class {
   serialize(node) {
     const id = this.idOf(node);
     if (node.nodeType === 3)
-      return { nodeType: 3, id, textContent: (node.textContent ?? "").slice(0, 5e3) };
+      return { nodeType: 3, id, textContent: (node.textContent ?? "").slice(0, 500) };
     if (node.nodeType === 8)
       return { nodeType: 8, id, textContent: node.textContent ?? "" };
     if (node.nodeType !== 1)
@@ -1128,7 +1129,7 @@ var Recorder = class {
         const el = m.target;
         data.attrs.push({ id: parentId, name: m.attributeName, newValue: el.getAttribute(m.attributeName) ?? "" });
       } else if (m.type === "characterData") {
-        data.texts.push({ id: parentId, newValue: (m.target.textContent ?? "").slice(0, 5e3) });
+        data.texts.push({ id: parentId, newValue: (m.target.textContent ?? "").slice(0, 500) });
       }
     }
     if (data.adds.length || data.removes.length || data.attrs.length || data.texts.length) {
