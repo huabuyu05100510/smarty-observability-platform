@@ -16,6 +16,7 @@ import { BreadcrumbCollector } from './breadcrumbs';
 import { Reporter, type OfflineStore } from './reporter';
 import { createIdbOfflineStore } from './offline-store';
 import { installRequestMonitor } from './request';
+import { Recorder } from './replay';
 import { redactPayload, type RedactOptions } from '@monit/pii';
 import { HeadSampler, TailSampler, composeSamplers, type Sampler } from '@monit/sampling';
 
@@ -43,6 +44,8 @@ export interface CollectorOptions {
   pii?: RedactOptions | false;
   /** 自定义采样器（默认：head sampleRate + tail 兜底 error/慢请求必留） */
   sampler?: Sampler;
+  /** 会话回放录制（rrweb 风格，默认开 30s 环；false 关闭） */
+  replay?: false | { windowMs?: number; maskInputs?: boolean };
 }
 
 export interface CollectorHandle {
@@ -99,6 +102,10 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
   const breadcrumbs = new BreadcrumbCollector(50);
   breadcrumbs.install();
 
+  // 3b. 会话回放录制（rrweb 风格，默认开 30s 环；错误事件带 sessionReplay）
+  const replay = opts.replay === false ? null : new Recorder(opts.replay ?? {});
+  replay?.install();
+
   // 4. 构造 MonitorEvent 的辅助
   const traceId = traceContext.traceId ?? '';
   const makeEvent = (
@@ -142,10 +149,11 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
 
   const uninstallErrors = installErrors({
     onError: (signal: ErrorSignal, fingerprint: ErrorFingerprint) => {
-      // 错误事件附带最近面包屑（还原用户操作路径）
+      // 错误事件附带最近面包屑 + 会话回放（还原用户操作路径）
       const event = makeEvent('error', signal.type as MonitorEventSubType, {
         ...signal,
         breadcrumbs: breadcrumbs.recent(),
+        ...(replay ? { sessionReplay: replay.getSnapshot() } : {}),
       }, fingerprint);
       reporter.enqueue(event);
     },
@@ -180,6 +188,7 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
       uninstallErrors();
       requestHandle.uninstall();
       breadcrumbs.uninstall();
+      replay?.uninstall();
       reporter.stop();
       traceContext.reset();
     },
