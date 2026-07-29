@@ -24,6 +24,15 @@ importers:
         specifier: ^2.0.0
         version: 2.0.0(@types/node@22.0.0)(jsdom@25.0.0)
 
+  packages/analysis:
+    dependencies:
+      '@monit/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@monit/repair-agent':
+        specifier: workspace:*
+        version: link:../repair-agent
+
   packages/backend:
     dependencies:
       '@monit/contracts':
