@@ -20,6 +20,14 @@ try {
   process.exit(1);
 }
 
+// 可选 GitHub 配置（自愈 PR 真打通用，gitignore 不入 git）
+let ghCfg = null;
+const ghPath = join(__dirname, '..', 'config', 'github.config.json');
+try {
+  const gh = JSON.parse(readFileSync(ghPath, 'utf-8'));
+  if (gh.token && gh.repo && !gh.repo.startsWith('REPLACE')) ghCfg = gh;
+} catch { /* github config 可选 */ }
+
 const llmConfig = {
   baseUrl: llmCfg.baseUrl,
   apiKey: llmCfg.apiKey,
@@ -27,15 +35,29 @@ const llmConfig = {
   temperature: llmCfg.temperature ?? 0.2,
 };
 
-// 1. backend（数据面 + React 面板 + JSONL 持久化 + 自动 AI 诊断）
+// 1. backend（数据面 + React 面板 + JSONL 持久化 + 自动 AI 诊断 + 自动自愈闭环）
+// 可选：自动自愈（AI 诊断后调 coordinator /auto-heal 跑完整 runMrDraftTrack → 开 PR）
+// demo 源文件：与测试 repo 内容一致（LLM 生成的 searchCode 才能匹配）
+let autoHeal = undefined;
+try {
+  const demoSource = readFileSync('/tmp/monit-test-repo/src/renderList.js', 'utf-8');
+  const demoTest = readFileSync('/tmp/monit-test-repo/src/renderList.test.js', 'utf-8');
+  autoHeal = {
+    coordinatorUrl: `http://127.0.0.1:3920`,
+    sourceFiles: [{ path: 'src/renderList.js', content: demoSource }],
+    testFiles: [{ path: 'src/renderList.test.js', content: demoTest }],
+    riskThreshold: 10,
+  };
+} catch { /* /tmp/monit-test-repo 不存在则不自愈，仅诊断 */ }
 const backend = createBackendServer({
   port: 3921,
   dbPath: './data/events.jsonl',
   dashboardFile: join(__dirname, '..', 'platform', 'frontend', 'index.html'),
   llmConfig,
+  autoHeal,
 });
-// 2. coordinator（自愈 HTTP 总线，接 LLM）
-const coordinator = createCoordinatorServer({ port: 3920, llmConfig });
+// 2. coordinator（自愈 HTTP 总线，接 LLM + 可选 GitHub）
+const coordinator = createCoordinatorServer({ port: 3920, llmConfig, githubConfig: ghCfg ?? undefined });
 
 await Promise.all([
   new Promise(r => backend.server.once('listening', r)),

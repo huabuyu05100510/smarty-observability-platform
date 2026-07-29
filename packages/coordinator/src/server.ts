@@ -14,9 +14,10 @@
  */
 
 import http from 'node:http';
-import type { BusEvent, AiPatchProposal } from '@monit/contracts';
+import type { BusEvent, AiPatchProposal, DiagnosticReport } from '@monit/contracts';
 import { EventBus } from './event-bus';
 import { generatePatch, type PatchContext } from './llm-patch';
+import { runMrDraftTrack } from './mr-draft-track';
 import { createGithubPr, applyPatchesLocally, type GithubConfig } from './github-pr';
 import type { LLMConfig } from '@monit/repair-agent';
 
@@ -141,6 +142,40 @@ async function route(
     const result = await createGithubPr(opts.githubConfig, proposal, branchName);
     bus.publish({ type: 'pr.created', result });
     return { status: result.ok ? 200 : 502, body: { result } };
+  }
+
+  // POST /auto-heal：跑完整自愈闭环（诊断→生成补丁→护栏→开 PR）。后端在 AI 诊断后自动触发。
+  if (url === '/auto-heal' && method === 'POST') {
+    if (!opts.llmConfig) return { status: 503, body: { error: 'LLM not configured' } };
+    if (!opts.githubConfig) return { status: 503, body: { error: 'GitHub not configured' } };
+    const b = (body || {}) as { record?: import('@monit/contracts').AttributionRecord; sourceFiles?: Array<{ path: string; content: string }>; testFiles?: Array<{ path: string; content: string }>; riskThreshold?: number; changes?: import('@monit/diagnose').ChangeEvent[]; anomaly?: import('@monit/diagnose').AnomalySignal };
+    if (!b.record || !b.sourceFiles) return { status: 400, body: { error: 'missing record/sourceFiles' } };
+    const report: DiagnosticReport = {
+      id: 'rep-' + (b.record.symptomId || 'auto'),
+      url: '',
+      createdAt: Date.now(),
+      vitals: [], inp: undefined, errors: [{
+        id: b.record.symptomId || 'auto', type: 'js',
+        message: typeof b.record.symptom.observed === 'string' ? b.record.symptom.observed : '',
+        timestamp: Date.now(),
+      }], longTasks: [], loafEntries: [],
+      summary: { issueCount: 1, worstSeverity: 'critical', headline: 'auto-heal' },
+    };
+    const result = await runMrDraftTrack({
+      report,
+      sourceFiles: b.sourceFiles,
+      changes: b.changes ?? [],
+      anomaly: b.anomaly ?? { startedAt: Date.now(), spikeRatio: 1 },
+      testFiles: b.testFiles ?? [],
+      goldPatches: [],
+      llmConfig: opts.llmConfig,
+      githubConfig: opts.githubConfig,
+      ...(opts.fs ? { fs: opts.fs } : {}),
+      ...(b.riskThreshold !== undefined ? { riskThreshold: b.riskThreshold } : {}),
+    });
+    bus.publish({ type: 'ai.patch.ready', proposal: result.proposal || ({ id: '', basedOn: '', track: 'mr-draft', patchType: 'replace', diagnosis: '', patches: [], riskNotes: [], riskScore: 0, createdAt: 0 } as never) });
+    if (result.prResult) bus.publish({ type: 'pr.created', result: result.prResult });
+    return { status: 200, body: result };
   }
 
   if (url === '/heal/apply' && method === 'POST') {

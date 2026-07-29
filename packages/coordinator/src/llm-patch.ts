@@ -25,7 +25,7 @@ const PATCH_SYSTEM_PROMPT = `You are a frontend repair agent. Given a root-cause
 Constraints:
 - Only modify files provided in the context.
 - Each patch hunk must have filePath + searchCode (exact existing substring) + replaceCode.
-- searchCode MUST be a verbatim substring that currently exists in the file (no hallucination).
+- searchCode MUST be a verbatim substring that currently exists in the file (no hallucination). COPY IT CHARACTER-BY-CHARACTER from the file content provided — same indentation, same whitespace, same line breaks. If you cannot find an exact match, shorten or extend until you do.
 - Keep changes local and minimal. Prefer guards/null-checks over rewrites.
 - Do NOT touch unrelated functions.
 
@@ -53,10 +53,13 @@ export async function generatePatch(
   if (!result || !Array.isArray(result.patches)) return null;
 
   // 确定性校验：searchCode 必须在目标文件真实存在（防 LLM 幻觉）
+  // 鲁棒：归一化空白后匹配（LLM 输出缩进/换行与文件微小差异不应废整个 patch）
+  const normalize = (s: string) => s.replace(/\s+/g, ' ').trim();
   const validated = result.patches.filter(p => {
     if (!p.filePath || !p.searchCode) return false;
     const file = ctx.files.find(f => f.path === p.filePath);
-    return file && file.content.includes(p.searchCode);
+    if (!file) return false;
+    return file.content.includes(p.searchCode) || normalize(file.content).includes(normalize(p.searchCode));
   });
 
   if (validated.length === 0) return null;

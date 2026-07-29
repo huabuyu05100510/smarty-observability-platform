@@ -31,6 +31,14 @@ export interface BackendOptions {
   dashboardFile?: string;
   /** 可选 LLM 配置（设了则错误流入后自动调 AI 出诊断，fire-and-forget） */
   llmConfig?: LLMConfig;
+  /** 可选自愈自动触发配置：AI 诊断后调 coordinator /auto-heal 跑完整 runMrDraftTrack → 开 PR */
+  autoHeal?: {
+    coordinatorUrl: string;
+    sourceFiles: Array<{ path: string; content: string }>;
+    testFiles?: Array<{ path: string; content: string }>;
+    /** demo 用：高阈值让 demo 触发 auto-pr（产品里应保持默认 0.4 严护栏） */
+    riskThreshold?: number;
+  };
 }
 
 export interface BackendHandle {
@@ -91,9 +99,39 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
             const g = store.errorGroup(fp);
             if (!g || g.aiDiagnosisPending || g.aiDiagnosis) continue;
             g.aiDiagnosisPending = true;
-            void runAiDiagnosis(opts.llmConfig, g).then((diag) => {
+            void runAiDiagnosis(opts.llmConfig, g).then(async (diag) => {
               if (diag) store.setAiDiagnosis(fp, diag);
               if (g) g.aiDiagnosisPending = false;
+              // AI 诊断后：若配了 sourceFiles（demo 仓库的源文件），自动触发自愈闭环
+              // （coordinator /auto-heal：诊断→生成补丁→护栏→开 PR）
+              if (diag && diag.formatMatched && opts.autoHeal?.sourceFiles?.length && opts.autoHeal?.coordinatorUrl) {
+                const errPayload = g.sample.payload as { message?: string; stack?: string };
+                const autoRecord = {
+                  id: 'rec-' + fp,
+                  symptomId: fp,
+                  symptom: { kind: 'error' as const, observed: errPayload?.message ?? '' },
+                  candidates: [{
+                    kind: 'error.js' as const,
+                    confidence: g.rootCause?.confidence ?? 0.8,
+                    evidence: g.rootCause?.evidence ?? [],
+                    anchors: { errorId: fp },
+                    suggestedHealIds: g.rootCause?.suggestedHealIds ?? [],
+                  }],
+                  severity: 'critical' as const,
+                  createdAt: g.firstSeen,
+                };
+                fetch(`${opts.autoHeal.coordinatorUrl}/auto-heal`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    record: autoRecord,
+                    sourceFiles: opts.autoHeal.sourceFiles,
+                    testFiles: opts.autoHeal.testFiles ?? [],
+                    riskThreshold: opts.autoHeal.riskThreshold,
+                    anomaly: { startedAt: g.firstSeen, spikeRatio: 1 },
+                  }),
+                }).catch((e) => console.warn('[auto-heal] trigger failed:', e));
+              }
             });
           }
         }
