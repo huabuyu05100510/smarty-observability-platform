@@ -25,6 +25,8 @@ export interface BackendOptions {
   githubRawBase?: string;
   /** 可选 SQLite 持久化路径（不传则纯内存）；:memory: 为内存 SQLite */
   dbPath?: string;
+  /** 可选 React 面板 HTML 文件路径（设了则作为 / 主面板，替代内置简单 HTML） */
+  dashboardFile?: string;
 }
 
 export interface BackendHandle {
@@ -135,9 +137,16 @@ export function createBackendServer(opts: BackendOptions = {}): BackendHandle {
         return;
       }
 
-      // GET / - dashboard
+      // GET / - dashboard（React 面板优先，否则内置简单 HTML）
       if (url === '/' && method === 'GET') {
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        if (opts.dashboardFile) {
+          try {
+            const fs = await import('node:fs');
+            res.end(fs.readFileSync(opts.dashboardFile, 'utf-8'));
+            return;
+          } catch { /* 降级到内置 HTML */ }
+        }
         res.end(dashboardHtml);
         return;
       }

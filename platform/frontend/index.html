@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>smarty-observability-platform · React Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0b0e14; color: #e6edf3; }
+  .app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
+  .sidebar { background: #11151c; border-right: 1px solid #1f2630; padding: 16px 0; }
+  .sidebar h1 { font-size: 14px; padding: 0 16px 16px; margin: 0; color: #58a6ff; border-bottom: 1px solid #1f2630; }
+  .nav-item { padding: 10px 16px; cursor: pointer; font-size: 13px; color: #8b949e; }
+  .nav-item:hover, .nav-item.active { background: #161b22; color: #e6edf3; border-left: 2px solid #58a6ff; }
+  .main { padding: 20px 24px; overflow: auto; }
+  .card { background: #11151c; border: 1px solid #1f2630; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 14px; color: #c9d1d9; }
+  .row { padding: 10px 0; border-bottom: 1px solid #1f2630; cursor: pointer; }
+  .row:hover { background: #161b22; }
+  .count { display: inline-block; min-width: 32px; padding: 2px 8px; border-radius: 4px; background: #3d1418; color: #ff7b72; font-size: 12px; font-weight: 600; margin-right: 8px; text-align: center; }
+  .msg { color: #d1d5db; font-size: 13px; }
+  .meta { color: #6b7280; font-size: 11px; margin-top: 2px; }
+  .good { color: #3fb950; } .ni { color: #d29922; } .poor { color: #f85149; }
+  pre { background: #0b0e14; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; border: 1px solid #1f2630; max-height: 320px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .btn { background: #1f6feb; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .btn:hover { background: #388bfd; }
+  .btn.sec { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; background: #21262d; color: #8b949e; margin-left: 6px; }
+  .ai { background: #0d1117; border: 1px solid #1f6feb44; }
+  .ai h2 { color: #58a6ff; }
+  .empty { color: #6b7280; text-align: center; padding: 24px; }
+  .stack-frame { font-family: monospace; font-size: 12px; padding: 4px 0; }
+  .breadcrumb { font-size: 11px; color: #8b949e; padding: 2px 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="importmap">
+{ "imports": { "react": "https://esm.sh/react@18.3.1", "react-dom/client": "https://esm.sh/react-dom@18.3.1/client", "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime" } }
+</script>
+<script type="module">
+import React, { useState, useEffect, useCallback } from 'react';
+import { createRoot } from 'react-dom/client';
+
+const API = window.__MONIT_API__ || 'http://127.0.0.1:3921';
+const COORD = window.__MONIT_COORD__ || 'http://127.0.0.1:3920';
+const { useEffect: ue, useState: us } = React;
+
+async function get(p) { return (await fetch(API + p)).json(); }
+
+function ratingClass(r) { return r === 'good' ? 'good' : r === 'poor' ? 'poor' : 'ni'; }
+function fmtTime(ts) { return ts ? new Date(ts).toLocaleString() : '-'; }
+
+// ── Error Inbox ──
+function ErrorInbox({ onPick }) {
+  const [groups, setGroups] = us([]);
+  const [q, setQ] = us('');
+  const load = useCallback(async () => setGroups((await get('/api/errors')).groups || []), []);
+  ue(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); }, [load]);
+  const filtered = groups.filter(g => g.message.toLowerCase().includes(q.toLowerCase()));
+  return React.createElement('div', null,
+    React.createElement('div', { style: { marginBottom: 12 } },
+      React.createElement('input', { placeholder: '搜索错误...', value: q, onChange: e => setQ(e.target.value), style: { background: '#0b0e14', border: '1px solid #1f2630', color: '#e6edf3', padding: '6px 10px', borderRadius: 4, width: 300 } }),
+      React.createElement('span', { className: 'badge' }, groups.length + ' groups'),
+    ),
+    filtered.length === 0
+      ? React.createElement('div', { className: 'empty' }, '无错误')
+      : filtered.map(g => React.createElement('div', { key: g.fingerprint, className: 'row', onClick: () => onPick(g.fingerprint) },
+          React.createElement('span', { className: 'count' }, g.count),
+          React.createElement('span', { className: 'msg' }, g.message.slice(0, 80)),
+          React.createElement('div', { className: 'meta' }, g.subType + ' · ' + g.sessionsAffected.size + ' sessions · last ' + fmtTime(g.lastSeen)),
+        ))
+  );
+}
+
+// ── Error Detail (sourcemap 还原栈 + 面包屑 + AI 诊断) ──
+function ErrorDetail({ fp, onBack }) {
+  const [data, setData] = us(null);
+  const [resolved, setResolved] = us(null);
+  const [ai, setAi] = us(null);
+  const [aiLoading, setAiLoading] = us(false);
+  ue(() => { get('/api/errors/' + encodeURIComponent(fp)).then(d => { setData(d); setResolved(null); }); }, [fp]);
+
+  const resolve = async () => {
+    const sample = data?.group?.sample?.payload;
+    const stack = sample?.stack;
+    if (!stack) return;
+    const r = await fetch(API + '/api/sourcemaps/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ appId: 'default', version: data.group.sample.release || 'latest', stack }) });
+    setResolved((await r.json()).frames || []);
+  };
+  const diagnose = async () => {
+    setAiLoading(true);
+    try {
+      const sample = data?.group?.sample?.payload;
+      const r = await fetch(COORD + '/ai/patch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        record: { id: 'rec-' + fp, symptomId: fp, symptom: { kind: 'error', observed: sample?.message || '' }, candidates: [{ kind: 'error.js', confidence: 0.8, evidence: [sample?.stack || ''], anchors: { errorId: fp }, suggestedHealIds: [] }], severity: 'critical', createdAt: Date.now() },
+        files: [{ path: 'app.ts', content: sample?.stack || '' }],
+      }) });
+      setAi((await r.json()).proposal || { error: 'no proposal' });
+    } catch (e) { setAi({ error: String(e) }); }
+    setAiLoading(false);
+  };
+
+  const sample = data?.group?.sample?.payload;
+  return React.createElement('div', null,
+    React.createElement('button', { className: 'btn sec', onClick: onBack, style: { marginBottom: 12 } }, '← 返回'),
+    React.createElement('div', { className: 'card' },
+      React.createElement('h2', null, sample?.message || '(no message)'),
+      React.createElement('div', { className: 'meta' }, 'fingerprint: ' + fp + ' · count ' + (data?.group?.count || 0)),
+    ),
+    React.createElement('div', { className: 'grid2' },
+      React.createElement('div', { className: 'card' },
+        React.createElement('h2', null, '压缩栈 ', React.createElement('button', { className: 'btn sec', onClick: resolve, style: { marginLeft: 8 } }, 'sourcemap 还原')),
+        React.createElement('pre', null, sample?.stack || '(no stack)'),
+        resolved && resolved.length > 0 && React.createElement('div', { style: { marginTop: 8 } },
+          React.createElement('h2', null, '还原后源码位置'),
+          resolved.map((f, i) => React.createElement('div', { key: i, className: 'stack-frame ' + (f.resolved ? 'good' : 'poor') }, (f.resolved ? '✓ ' : '✗ ') + (f.source || '?') + ':' + (f.line || '?') + ':' + (f.column || '?'))),
+        ),
+      ),
+      React.createElement('div', null,
+        React.createElement('div', { className: 'card' },
+          React.createElement('h2', null, '面包屑'),
+          (sample?.breadcrumbs || []).length === 0 ? React.createElement('div', { className: 'empty' }, '无') : sample.breadcrumbs.map((b, i) => React.createElement('div', { key: i, className: 'breadcrumb' }, b.type + ': ' + b.message)),
+        ),
+        React.createElement('div', { className: 'card ai' },
+          React.createElement('h2', null, 'AI 自愈诊断 ', React.createElement('button', { className: 'btn', onClick: diagnose, disabled: aiLoading }, aiLoading ? '分析中...' : 'MiniMax 诊断')),
+          ai && React.createElement('pre', null, JSON.stringify(ai, null, 2)),
+        ),
+      ),
+    ),
+  );
+}
+
+// ── Vitals ──
+function Vitals() {
+  const [vitals, setVitals] = us([]);
+  ue(() => { get('/api/vitals').then(d => setVitals(d.vitals || [])); const t = setInterval(() => get('/api/vitals').then(d => setVitals(d.vitals || [])), 5000); return () => clearInterval(t); }, []);
+  return React.createElement('div', { className: 'card' },
+    React.createElement('h2', null, 'Web Vitals（p75 / p99）'),
+    vitals.length === 0 ? React.createElement('div', { className: 'empty' }, '无 vital 数据') :
+      React.createElement('table', { style: { width: '100%', borderCollapse: 'collapse' } },
+        React.createElement('thead', null, React.createElement('tr', null, ['指标', 'count', 'p75', 'p99', '评级'].map(h => React.createElement('th', { key: h, style: { textAlign: 'left', padding: '8px', borderBottom: '1px solid #1f2630', fontSize: 12 } }, h)))),
+        React.createElement('tbody', null, vitals.map(v => React.createElement('tr', { key: v.name },
+          ['name', 'count', 'p75', 'p99', 'worstRating'].map((k, i) => React.createElement('td', { key: k, style: { padding: '8px', fontSize: 13 } }, k === 'worstRating' ? React.createElement('span', { className: ratingClass(v[k]) }, v[k]) : (k === 'p75' || k === 'p99' ? (v[k] ?? 0).toFixed(0) : v[k]))),
+        ))),
+      ),
+  );
+}
+
+// ── Sessions ──
+function Sessions() {
+  const [sessions, setSessions] = us([]);
+  ue(() => { get('/api/sessions').then(d => setSessions(d.sessions || [])); const t = setInterval(() => get('/api/sessions').then(d => setSessions(d.sessions || [])), 5000); return () => clearInterval(t); }, []);
+  return React.createElement('div', { className: 'card' },
+    React.createElement('h2', null, 'Sessions'),
+    sessions.length === 0 ? React.createElement('div', { className: 'empty' }, '无 session') :
+      sessions.slice(0, 50).map(s => React.createElement('div', { key: s.sessionId, className: 'row' },
+        React.createElement('span', { className: 'msg' }, s.sessionId.slice(0, 24)),
+        React.createElement('span', { className: 'badge' }, s.release),
+        React.createElement('div', { className: 'meta' }, s.eventCount + ' events · ' + s.errorCount + ' errors · ' + fmtTime(s.lastSeen)),
+      )),
+  );
+}
+
+function App() {
+  const [tab, setTab] = us('errors');
+  const [picked, setPicked] = us(null);
+  const nav = [['errors', '错误收件箱'], ['vitals', 'Web Vitals'], ['sessions', 'Sessions']];
+  return React.createElement('div', { className: 'app' },
+    React.createElement('div', { className: 'sidebar' },
+      React.createElement('h1', null, 'smarty-observability'),
+      nav.map(([k, label]) => React.createElement('div', { key: k, className: 'nav-item ' + (tab === k ? 'active' : ''), onClick: () => { setTab(k); setPicked(null); } }, label)),
+    ),
+    React.createElement('div', { className: 'main' },
+      tab === 'errors' && (picked ? React.createElement(ErrorDetail, { fp: picked, onBack: () => setPicked(null) }) : React.createElement(ErrorInbox, { onPick: setPicked })),
+      tab === 'vitals' && React.createElement(Vitals),
+      tab === 'sessions' && React.createElement(Sessions),
+    ),
+  );
+}
+
+createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>

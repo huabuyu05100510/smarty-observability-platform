@@ -1,0 +1,1 @@
+{"id":"rd-1254231245","type":"error","subType":"js","timestamp":1785305045000,"traceId":"a","spanId":"b","sessionId":"s-rd","release":"react-test","payload":{"id":"e","type":"js","message":"react-dashboard-verify-32586","stack":"TypeError\n    at fn (app.js:1:1)"},"piiSafe":true,"sampled":true,"fingerprint":{"primary":"rd-verify"}}
