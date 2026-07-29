@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>session-replay player</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #0b0e14; color: #e6edf3; }
+  .bar { padding: 10px 16px; background: #11151c; border-bottom: 1px solid #1f2630; display: flex; gap: 12px; align-items: center; }
+  .bar h1 { margin: 0; font-size: 14px; color: #58a6ff; flex: 1; }
+  .btn { background: #1f6feb; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .btn.sec { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
+  .stage { padding: 24px; min-height: 360px; background: #fff; color: #0b0e14; font-family: system-ui; border-bottom: 1px solid #1f2630; }
+  .stage * { font-size: 14px; }
+  .stage .node-id { display: inline-block; background: #dbeafe; color: #1e40af; font-size: 10px; padding: 1px 4px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .progress { height: 4px; background: #161b22; position: relative; }
+  .bar-inner { height: 100%; background: #58a6ff; width: 0%; transition: width 0.1s linear; }
+  .log { padding: 12px 16px; max-height: 180px; overflow: auto; font-family: monospace; font-size: 11px; color: #8b949e; background: #0b0e14; }
+  .log .ev { padding: 1px 0; }
+  .log .ev.mut { color: #58a6ff; } .log .ev.inp { color: #3fb950; } .log .ev.snap { color: #d29922; }
+  input.url { background: #0b0e14; border: 1px solid #1f2630; color: #e6edf3; padding: 4px 8px; border-radius: 3px; width: 280px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <h1>session-replay player</h1>
+  <input class="url" id="src" placeholder="ReplayData JSON URL 或粘贴" />
+  <button class="btn" id="load">加载</button>
+  <button class="btn sec" id="play">▶ 播放</button>
+  <button class="btn sec" id="pause">⏸ 暂停</button>
+  <span id="status" style="font-size:11px;color:#8b949e;"></span>
+</div>
+<div class="progress"><div class="bar-inner" id="bar"></div></div>
+<div class="stage" id="stage">（加载回放数据后在此重建 DOM）</div>
+<div class="log" id="log"></div>
+<script>
+// 极简 rrweb 风格回放：重建 snapshot DOM → 按时间序应用 mutation/input
+let data = null;     // ReplayData { startedAt, endedAt, events: [{type, ts, data}] }
+let nodeMap = new Map(); // id -> DOM element
+let timer = null;
+let cursor = 0;       // current event index
+let playing = false;
+let speed = 1;        // 1x / 5x / 20x
+
+const stage = document.getElementById('stage');
+const logEl = document.getElementById('log');
+const barEl = document.getElementById('bar');
+const statusEl = document.getElementById('status');
+
+function log(msg, cls) {
+  const d = document.createElement('div');
+  d.className = 'ev ' + (cls || '');
+  d.textContent = msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// 从 SerializedNode 重建 DOM（递归）
+function buildNode(n) {
+  let el;
+  if (n.nodeType === 3) el = document.createTextNode(n.textContent || '');
+  else if (n.nodeType === 8) el = document.createComment(n.textContent || '');
+  else if (n.nodeType === 1) {
+    el = document.createElement(n.tagName || 'div');
+    for (const [k, v] of Object.entries(n.attributes || {})) el.setAttribute(k, v);
+    for (const c of (n.children || [])) el.appendChild(buildNode(c));
+  } else el = document.createElement('div');
+  // 标记节点 id（用 data 属性，不污染原 DOM）
+  if (n.id !== undefined) el.setAttribute && el.setAttribute('data-replay-id', n.id);
+  return el;
+}
+
+function renderSnapshot(snap) {
+  nodeMap = new Map();
+  stage.innerHTML = '';
+  const root = buildNode(snap);
+  stage.appendChild(root);
+  // 建立 id -> element 映射（遍历 stage）
+  const walk = (el) => {
+    const id = el.getAttribute && el.getAttribute('data-replay-id');
+    if (id) nodeMap.set(Number(id), el);
+    for (const c of el.childNodes) if (c.nodeType === 1) walk(c);
+  };
+  walk(root);
+  log(`snapshot: ${nodeMap.size} nodes`, 'snap');
+}
+
+function applyMutation(m) {
+  for (const a of m.adds || []) {
+    const parent = nodeMap.get(a.parentId);
+    if (!parent) continue;
+    const node = buildNode(a.node);
+    parent.appendChild(node);
+    const id = a.node.id; if (id !== undefined) nodeMap.set(id, node);
+  }
+  for (const r of m.removes || []) {
+    const n = nodeMap.get(r.id); if (n) n.remove();
+  }
+  for (const at of m.attrs || []) {
+    const n = nodeMap.get(at.id); if (n) n.setAttribute(at.name, at.newValue);
+  }
+  for (const tx of m.texts || []) {
+    const n = nodeMap.get(tx.id); if (n && n.textContent !== undefined) n.textContent = tx.newValue;
+  }
+  log(`mutation: +${m.adds?.length || 0} -${m.removes?.length || 0} ~${m.attrs?.length || 0} =${m.texts?.length || 0}`, 'mut');
+}
+
+function applyInput(i) {
+  log(`input: ${i.selector || ('#'+i.id)} val.len=${i.valueLength}${i.masked?' (masked)':''}`, 'inp');
+}
+
+function tick() {
+  if (!data || !playing) return;
+  if (cursor >= data.events.length) { playing = false; statusEl.textContent = 'finished'; return; }
+  const e = data.events[cursor];
+  if (e.type === 'snapshot') {
+    renderSnapshot(e.data);
+  } else if (e.type === 'mutation') {
+    applyMutation(e.data);
+  } else if (e.type === 'input') {
+    applyInput(e.data);
+  }
+  cursor++;
+  barEl.style.width = (cursor / data.events.length * 100) + '%';
+  statusEl.textContent = `${cursor}/${data.events.length}`;
+  // 调度下一事件（按 ts 间隔 × 速度）
+  const next = data.events[cursor];
+  if (next) {
+    const gap = (next.ts - e.ts) / speed;
+    timer = setTimeout(tick, Math.max(10, Math.min(gap, 1000)));
+  } else {
+    timer = setTimeout(tick, 100);
+  }
+}
+
+document.getElementById('play').onclick = () => { if (data && !playing) { playing = true; tick(); } };
+document.getElementById('pause').onclick = () => { playing = false; if (timer) clearTimeout(timer); };
+document.getElementById('load').onclick = async () => {
+  const v = document.getElementById('src').value.trim();
+  try {
+    let d;
+    if (v.startsWith('http')) d = await (await fetch(v)).json();
+    else d = JSON.parse(v);
+    data = d;
+    cursor = 0; logEl.innerHTML = ''; stage.innerHTML = '';
+    if (data.events?.length) renderSnapshot(data.events.find(e=>e.type==='snapshot')?.data);
+    statusEl.textContent = `${data.events?.length || 0} events loaded`;
+    log(`loaded: ${data.events?.length} events (${data.startedAt} → ${data.endedAt})`, 'snap');
+  } catch (e) { statusEl.textContent = 'load error: ' + e.message; }
+};
+</script>
+</body>
+</html>
