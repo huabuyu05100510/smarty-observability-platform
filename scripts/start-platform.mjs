@@ -33,6 +33,7 @@ const llmConfig = {
   apiKey: llmCfg.apiKey,
   model: llmCfg.model,
   temperature: llmCfg.temperature ?? 0.2,
+  provider: llmCfg.provider ?? 'openai',
 };
 
 // 1. backend（数据面 + React 面板 + JSONL 持久化 + 自动 AI 诊断 + 自动自愈闭环）

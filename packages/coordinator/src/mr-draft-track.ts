@@ -111,8 +111,11 @@ export async function runMrDraftTrack(opts: MrDraftTrackOptions): Promise<MrDraf
 
   // 5. 开 PR（auto-pr 或 draft-with-warnings 都开，均人审）
   let prResult: PrResult | null = null;
-  if (opts.githubConfig && opts.fs) {
-    await applyPatchesLocally(proposal, opts.fs.readFile, opts.fs.writeFile);
+  if (opts.githubConfig) {
+    // 可选本地写盘（轨道 B 的本地侧）；createGithubPr 走 GitHub Contents API，无需本地 fs
+    if (opts.fs) {
+      await applyPatchesLocally(proposal, opts.fs.readFile, opts.fs.writeFile);
+    }
     const branch = `fix/smarty-${proposal.id.slice(-8)}`;
     prResult = await createGithubPr(opts.githubConfig, proposal, branch);
   } else {

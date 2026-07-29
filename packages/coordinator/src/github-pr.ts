@@ -91,20 +91,32 @@ export async function createGithubPr(
       return { ok: false, error: `create branch ${createBranch.status}` };
     }
 
-    // 4. PUT 每个文件
+    // 4. PUT 每个文件（取 repo 当前内容 -> 应用 searchCode->replaceCode -> 上传合成后的完整文件）
     for (const hunk of proposal.patches) {
-      // 取现有文件 sha（若存在）
+      // 取现有文件 sha + 内容
       const fileRes = await fetch(`${API}/repos/${repo}/contents/${hunk.filePath}?ref=${branch}`, {
         headers: headers(token),
       });
       let sha: string | undefined;
+      let currentContent = '';
       if (fileRes.ok) {
-        const fileJson = await fileRes.json() as { sha?: string };
+        const fileJson = await fileRes.json() as { sha?: string; content?: string; encoding?: string };
         sha = fileJson.sha;
+        if (fileJson.content) {
+          currentContent = Buffer.from(fileJson.content, 'base64').toString('utf-8');
+        }
       }
-      // 这里用 replaceCode 作为完整文件内容（P0 简化：单 hunk 替换整文件需调用方先合成）
-      // 真实场景应 applyPatchesLocally 后上传完整文件
-      const content = btoa(unescape(encodeURIComponent(hunk.replaceCode)));
+      // 合成完整新文件：在现有内容上做 searchCode->replaceCode；文件不存在或 searchCode 不在则直接用 replaceCode（新建）
+      let newContent: string;
+      if (currentContent && currentContent.includes(hunk.searchCode)) {
+        newContent = currentContent.replace(hunk.searchCode, hunk.replaceCode);
+      } else if (currentContent && hunk.searchCode && hunk.replaceCode) {
+        // searchCode 空白差异：用归一化空白匹配定位再替换
+        newContent = replaceByNormalizedWhitespace(currentContent, hunk.searchCode, hunk.replaceCode) ?? hunk.replaceCode;
+      } else {
+        newContent = hunk.replaceCode;
+      }
+      const content = Buffer.from(newContent, 'utf-8').toString('base64');
       const putRes = await fetch(`${API}/repos/${repo}/contents/${hunk.filePath}`, {
         method: 'PUT',
         headers: headers(token),
@@ -147,6 +159,29 @@ export async function createGithubPr(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** 空白归一化匹配替换：容忍 searchCode 与文件在缩进/换行上的微小差异 */
+function replaceByNormalizedWhitespace(content: string, searchCode: string, replaceCode: string): string | null {
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const normSearch = norm(searchCode);
+  if (!normSearch) return null;
+  // 逐行找候选起点：把每行作为候选，拼接后续行直到归一化长度匹配 normSearch
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    let acc = '';
+    for (let j = i; j < lines.length; j++) {
+      acc = acc ? acc + ' ' + lines[j].trim() : lines[j].trim();
+      if (norm(acc) === normSearch) {
+        // 替换 lines[i..j] 为 replaceCode
+        const before = lines.slice(0, i).join('\n');
+        const after = lines.slice(j + 1).join('\n');
+        return [before, replaceCode, after].filter(x => x !== '').join('\n');
+      }
+      if (acc.length > normSearch.length + 40) break; // 超长则放弃此起点
+    }
+  }
+  return null;
 }
 
 function buildPrBody(p: AiPatchProposal): string {

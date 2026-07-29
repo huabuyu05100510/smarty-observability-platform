@@ -14,6 +14,8 @@ export interface LLMConfig {
   temperature?: number;
   /** 最大重试 */
   maxRetries?: number;
+  /** 协议格式：openai（/chat/completions）| anthropic（/v1/messages）。默认 openai。 */
+  provider?: 'openai' | 'anthropic';
 }
 
 export interface ChatMessage {
@@ -45,6 +47,12 @@ function sleep(ms: number): Promise<void> {
  * 同步 chat completion（非流式）。429/5xx 指数退避重试。
  */
 export async function chat(config: LLMConfig, messages: ChatMessage[]): Promise<ChatResult> {
+  // Anthropic 协议端点（如 Volcengine ARK 的 Claude 兼容网关）走 /v1/messages
+  if (config.provider === 'anthropic') return chatAnthropic(config, messages);
+  return chatOpenAi(config, messages);
+}
+
+async function chatOpenAi(config: LLMConfig, messages: ChatMessage[]): Promise<ChatResult> {
   const url = `${normalizeBaseUrl(config.baseUrl)}/chat/completions`;
   const maxRetries = config.maxRetries ?? 3;
 
@@ -77,6 +85,60 @@ export async function chat(config: LLMConfig, messages: ChatMessage[]): Promise<
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content ?? '';
       return { content, usage: data?.usage };
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries) {
+        await sleep(500 * Math.pow(2, attempt));
+        continue;
+      }
+    }
+  }
+  throw lastError ?? new Error('LLM chat failed');
+}
+
+/**
+ * Anthropic 协议（/v1/messages，如 Volcengine ARK Claude 兼容网关）。
+ * 消息里 system 角色抽成顶层 system 字段，user/assistant 保留为 messages。
+ * 响应取 content[0].text。
+ */
+async function chatAnthropic(config: LLMConfig, messages: ChatMessage[]): Promise<ChatResult> {
+  const url = `${normalizeBaseUrl(config.baseUrl)}/v1/messages`;
+  const maxRetries = config.maxRetries ?? 3;
+  const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  const convo = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }));
+
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'anthropic-version': '2023-06-01',
+          ...(config.apiKey ? { 'x-api-key': config.apiKey } : {}),
+        },
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: 2048,
+          temperature: config.temperature ?? 0.2,
+          ...(system ? { system } : {}),
+          messages: convo.length > 0 ? convo : [{ role: 'user', content: '' }],
+        }),
+      });
+
+      if (!res.ok) {
+        if (RETRYABLE_STATUS.has(res.status) && attempt < maxRetries) {
+          await sleep(Math.min(8000, 500 * Math.pow(2, attempt)));
+          continue;
+        }
+        throw new Error(`LLM ${res.status}: ${await res.text().catch(() => res.statusText)}`);
+      }
+
+      const data = await res.json();
+      const content = Array.isArray(data?.content)
+        ? data.content.map((c: { text?: string }) => c.text ?? '').join('')
+        : (data?.content ?? '');
+      return { content, usage: data?.usage ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens } : undefined };
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < maxRetries) {
