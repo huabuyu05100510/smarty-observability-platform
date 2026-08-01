@@ -22,8 +22,9 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, basename, join, resolve, relative, isAbsolute } from 'node:path';
 import type { AiPatchProposal, HealDecision, PrResult, ReproTest } from '@monit/contracts';
-import { runHealPipeline, type HealPipelineDeps, type ReproTestCode, type ApplyResult, type DeliveryResult, type ReproRunResult } from '@monit/repair-agent';
+import { runHealPipeline, type HealPipelineDeps, type ReproTestCode, type ApplyResult, type DeliveryResult, type ReproRunResult, type ModelInfo } from '@monit/repair-agent';
 import { chatJson, type LLMConfig, type Diagnosis } from '@monit/repair-agent';
+import { runCausalValidationOnPatch, type ExperimentResult } from '@monit/causal';
 import { applyPatchesLocally, createGithubPr, type GithubConfig } from './github-pr';
 import { detectContamination } from '@monit/guardrails';
 import { countChangedLines } from '@monit/server-kit';
@@ -81,6 +82,16 @@ export interface HealRunnerOptions {
   behaviorPreserving?: boolean;
   maxAttempts?: number;
   onLog?: (msg: string) => void;
+  /** ⚠️ experimental 因果统计验证:patch 通过 gate 后、交付前,在 applied/reverted 两态采样测指标,
+   *  Welch t 裁决;不显著或异常 → fail-closed 降级 human(不自动交付)。需调用方提供 measure(真实页面/回放)。*/
+  causalValidation?: {
+    measure: () => Promise<number>;
+    direction?: 'decrease' | 'increase';
+    alpha?: number;
+    samples?: number;
+    metric?: string;
+    claim?: string;
+  };
 }
 
 const REPRO_SYSTEM_PROMPT = `You are a test-generation agent. Given a bug (symptom + stack + source), generate a MINIMAL vitest test that REPRODUCES the bug — i.e., the test MUST FAIL against the current (buggy) code and PASS once the bug is fixed.
@@ -274,9 +285,37 @@ export async function runRealHealPipeline(opts: HealRunnerOptions) {
   };
 
   // ── deliver：auto-mr -> PR；hotfix -> rollback 句柄 ─────────────────────
+  let causalResult: ExperimentResult | null = null;
   const deliver = async (decision: HealDecision, _diag: Diagnosis, _repro: ReproTest | null): Promise<DeliveryResult> => {
     const proposal = (_diag as Diagnosis & { __proposal?: AiPatchProposal }).__proposal;
     if (!proposal) return null;
+    // ⚠️ experimental 因果统计验证:patch 已 applied,验证是否统计显著改善指标。
+    // 不显著(证据明确未改善)或异常 → fail-closed 降级 human:回滚 patch、不自动交付。
+    if (opts.causalValidation && (decision.delivery === 'auto-mr' || decision.delivery === 'hotfix')) {
+      try {
+        causalResult = await runCausalValidationOnPatch({
+          measure: opts.causalValidation.measure,
+          applyPatch: async () => { if (!patchApplied) await applyPatch(_diag); },
+          revertPatch: async () => { if (patchApplied) await revertPatch(); },
+          direction: opts.causalValidation.direction,
+          alpha: opts.causalValidation.alpha,
+          samples: opts.causalValidation.samples,
+          metric: opts.causalValidation.metric,
+          claim: opts.causalValidation.claim,
+        });
+        if (causalResult.conclusion !== 'accepted') {
+          log(`[causal] 未通过(conclusion=${causalResult.conclusion}, p=${causalResult.pValue.toFixed(3)}, effect=${causalResult.effectSize.toFixed(1)}) → fail-closed 降级 human`);
+          await revertPatch();
+          return null;
+        }
+        log(`[causal] 通过(effect=${causalResult.effectSize.toFixed(1)}, p=${causalResult.pValue.toFixed(3)})`);
+      } catch (e) {
+        log(`[causal] 验证异常: ${e instanceof Error ? e.message : String(e)} → fail-closed 降级 human`);
+        causalResult = null;
+        await revertPatch();
+        return null;
+      }
+    }
     if (decision.delivery === 'auto-mr' && opts.githubConfig) {
       const branch = `fix/smarty-${Date.now().toString(36)}`;
       log(`[deliver] 开 PR（auto-mr）-> branch ${branch}`);
@@ -310,7 +349,8 @@ export async function runRealHealPipeline(opts: HealRunnerOptions) {
     },
   };
 
-  return runHealPipeline(deps);
+  const result = await runHealPipeline(deps);
+  return { ...result, causalValidation: causalResult };
 }
 
 // ── 内部：LLM 诊断提案（复用 coordinator/llm-patch 的 prompt 思路）─────────────

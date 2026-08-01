@@ -3,6 +3,7 @@ import { InterventionProtocol, welchTStatistic, tDistributionPValueTwoSided } fr
 import { emptyGraph, addNode, addEdge, doIntervention, parents } from '../src/causal-graph';
 import { LinearPerfModel } from '../src/model';
 import { Tournament } from '../src/tournament';
+import { runCausalValidationOnPatch } from '../src/patch-validation';
 
 describe('causal-graph', () => {
   it('doIntervention 切入边(backdoor)并标记 intervention', () => {
@@ -96,5 +97,40 @@ describe('tournament · 多候选科学选拔', () => {
     const res = await t.run([cand1, cand2], 8);
     expect(res.winner?.candidate.id).toBe('c2');
     expect(res.inconclusive.map((c) => c.id)).toContain('c1');
+  });
+});
+
+describe('patch-validation · patch 统计验证', () => {
+  it('treated 显著优于 baseline → accepted(交付放行)', async () => {
+    let state: 'baseline' | 'treated' = 'baseline';
+    const r = await runCausalValidationOnPatch({
+      measure: async () => (state === 'treated' ? 400 : 600),
+      applyPatch: async () => { state = 'treated'; },
+      revertPatch: async () => { state = 'baseline'; },
+      direction: 'decrease', samples: 8,
+    });
+    expect(r.conclusion).toBe('accepted');
+    expect(r.treated.mean).toBeLessThan(r.baseline.mean);
+  });
+
+  it('无差异 → inconclusive(调用方据此降级 human)', async () => {
+    const r = await runCausalValidationOnPatch({
+      measure: async () => 500,
+      applyPatch: async () => {},
+      revertPatch: async () => {},
+      samples: 8,
+    });
+    expect(r.conclusion).toBe('inconclusive');
+  });
+
+  it('方向相反(treated 更差)→ rejected(降级)', async () => {
+    let state: 'baseline' | 'treated' = 'baseline';
+    const r = await runCausalValidationOnPatch({
+      measure: async () => (state === 'treated' ? 600 : 400),
+      applyPatch: async () => { state = 'treated'; },
+      revertPatch: async () => { state = 'baseline'; },
+      direction: 'decrease', samples: 8,
+    });
+    expect(r.conclusion).toBe('rejected');
   });
 });

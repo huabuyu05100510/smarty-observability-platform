@@ -112,6 +112,9 @@ importers:
 
   packages/coordinator:
     dependencies:
+      '@monit/causal':
+        specifier: workspace:*
+        version: link:../causal
       '@monit/contracts':
         specifier: workspace:*
         version: link:../contracts

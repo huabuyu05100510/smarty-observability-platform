@@ -14,3 +14,4 @@ export * from './causal-graph';
 export * from './experiment';
 export * from './model';
 export * from './tournament';
+export * from './patch-validation';

@@ -21,6 +21,7 @@
     "@monit/repair-agent": "workspace:*",
     "@monit/diagnose": "workspace:*",
     "@monit/guardrails": "workspace:*",
-    "@monit/server-kit": "workspace:*"
+    "@monit/server-kit": "workspace:*",
+    "@monit/causal": "workspace:*"
   }
 }
