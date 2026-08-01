@@ -87,7 +87,7 @@ const summary = {
   gate: result.decision?.gate ?? null,
   reasons: result.decision?.reasons ?? [],
   repro: result.repro ? { testName: result.repro.testName, redBefore: result.repro.redBefore, greenAfter: result.repro.greenAfter, filePath: result.repro.filePath } : null,
-  verifier: result.verifier ? { refuted: result.verifier.refuted, reason: result.verifier.reason, confidence: result.verifier.confidence } : null,
+  verifier: result.verifier ? { refuted: result.verifier.refuted, reason: result.verifier.reason, confidence: result.verifier.confidence, verifierModel: verifierConfig.model, verifierProvider: verifierConfig.provider, verifierLabel } : null,
   pr: (result.delivery && result.delivery?.prUrl) ? result.delivery : (result.delivery?.ok ? result.delivery : null),
   diagnosis: result.diagnosis?.rootCause ?? null,
 };
@@ -113,7 +113,7 @@ const md = [
   '```json',
   JSON.stringify(summary.verifier, null, 2),
   '```',
-  '> 诚实标注：Verifier 与 Diagnoser 同模型（ARK key /api/plan 仅 1 模型支持 agent-plan）。架构已就绪，换 verifierConfig.model 即真·独立对抗。',
+  `> Verifier: ${verifierLabel}（实际 model=${verifierConfig.model}, provider=${verifierConfig.provider}）`,
   '',
   '## Repro 测试（红转绿）',
   '```json',
