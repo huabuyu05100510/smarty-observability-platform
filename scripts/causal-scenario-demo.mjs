@@ -1,10 +1,10 @@
 /**
  * causal + scenario 端到端演示:科学闭环(假设 → 干预 → 统计 → 裁决)。
  *
- * 用 mock ScenarioBrowser(无需 Chromium);真实环境把 mockBrowser 换成 puppeteer 适配器:
- *   import puppeteer from 'puppeteer-core';
- *   const b = await puppeteer.connect({ browserURL: 'http://127.0.0.1:9222' });
- *   // b.newPage()/page.goto/click/evaluate 与 ScenarioBrowser 接口一致
+ * 用 mock ScenarioBrowser(无需 Chromium);真实环境把 mockBrowser 换成 Playwright 适配器:
+ *   import { chromium } from 'playwright';
+ *   const b = await chromium.launch();
+ *   // page.goto / page.click / page.fill(→type 适配) / page.evaluate / page.clock 与 ScenarioBrowser 接口一致
  *
  * 跑:先 pnpm build,再 node scripts/causal-scenario-demo.mjs
  */

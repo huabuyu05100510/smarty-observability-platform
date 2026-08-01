@@ -6,8 +6,9 @@
  * 视觉重放(JS 不真跑)产不出。故本包做最小执行重放:声明式操作序列 + 注入浏览器抽象 +
  * 在真页面测指标。rrweb 实时录制(操作序列的实时来源)是后续工作(见 docs/录制重放系统-设计方案.md)。
  *
- * 设计:浏览器抽象 ScenarioBrowser 注入 —— scenario 包不硬依赖 puppeteer;测试用 mock,
- * 真实环境用 puppeteer 适配器(见 scripts/causal-scenario-demo.mjs)。
+ * 设计:浏览器抽象 ScenarioBrowser 注入 —— scenario 包不硬依赖任何浏览器自动化;测试用 mock,
+ * 真实环境用 Playwright 适配器(见 scripts/causal-scenario-demo.mjs)。选 Playwright 而非 Puppeteer:
+ * page.clock(确定性 fake timers,钉死时间)+ Trace Viewer(可交互执行复现)+ 跨浏览器(Chromium/Firefox/WebKit)。
  */
 
 export type ScenarioActionType = 'goto' | 'click' | 'input' | 'wait' | 'eval' | 'measure';
