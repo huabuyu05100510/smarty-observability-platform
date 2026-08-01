@@ -1,0 +1,21 @@
+{
+  "name": "@monit/scenario",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "description": "⚠️ experimental: 确定性场景执行重放 — 作为 @monit/causal 统计验证的 measure 测试床。声明式操作序列 + 注入浏览器抽象 + 指标测量。无 puppeteer 硬依赖(browser 注入,CI 用 mock 测逻辑)。",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {}
+}

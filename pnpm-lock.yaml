@@ -212,6 +212,8 @@ importers:
 
   packages/sampling: {}
 
+  packages/scenario: {}
+
   packages/server-kit:
     dependencies:
       '@monit/crypto-kit':
