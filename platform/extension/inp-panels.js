@@ -94,6 +94,7 @@
   function HealPanel({ live, appliedTokens, setAppliedTokens, settings }) {
     const [busy, setBusy] = React.useState(null);
     const [result, setResult] = React.useState(null);
+    const [causal, setCausal] = React.useState(null);
     const templates = (global.__inpHeal && global.__inpHeal.list()) || [];
     const baseline = live?.inp?.value;
 
@@ -106,7 +107,14 @@
         else if (resp.ok) {
           // hint 类模板(memo/cleanup)仅 console.info，不占 patch 槽 → 不入 appliedTokens，可重复触发查看提示
           const hintLess = tplId === 'memo_wrap' || tplId === 'inject_cleanup';
-          if (!hintLess) setAppliedTokens((p) => [...p, { token: resp.token, templateId: tplId, appliedAt: Date.now(), summary: resp.summary }]);
+          if (!hintLess) {
+            setAppliedTokens((p) => [...p, { token: resp.token, templateId: tplId, appliedAt: Date.now(), summary: resp.summary }]);
+            // 因果统计验证:baseline = apply 时最近交互的 INP;treated = apply 后新交互(用户继续浏览)
+            const baseVals = (live?.interactions || []).map((i) => i.value).filter((v) => v > 0).slice(-8);
+            if (baseVals.length >= 4 && globalThis.__causal) {
+              setCausal({ phase: 'collecting', baseline: baseVals, treated: [], need: 6, applyTime: Date.now(), tplId, result: null });
+            }
+          }
           setResult({ ok: true, msg: '已' + (hintLess ? '提示' : '注入') + ': ' + resp.summary });
         }
         else setResult({ ok: false, reason: resp.reason });
@@ -115,6 +123,24 @@
     };
     const rollback = (token) => { if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) return; chrome.runtime.sendMessage({ type: 'ROLLBACK_HEAL', token }, (resp) => { if (resp?.ok) setAppliedTokens((p) => p.filter((t) => t.token !== token)); }); };
     const rollbackAll = () => appliedTokens.forEach((t) => rollback(t.token));
+
+    // 因果统计验证:patch apply 后用 content.js 采集的真实 INP 裁决。treated 攒够 need → Welch t;
+    // accepted → 保留(默认);非 accepted → 自动回滚(回滚未显著改善的 patch)。local-first,无 Node/Playwright。
+    React.useEffect(() => {
+      if (!causal || causal.phase !== 'collecting') return;
+      const treated = (live?.interactions || []).filter((i) => (i.time || 0) > causal.applyTime).map((i) => i.value).filter((v) => v > 0);
+      if (treated.length >= causal.need) {
+        const use = treated.slice(0, causal.need);
+        const r = (globalThis.__causal && globalThis.__causal.runCausalValidation(causal.baseline, use, { direction: 'decrease', alpha: 0.05 })) || null;
+        setCausal({ ...causal, treated: use, result: r, phase: 'done' });
+        if (r && r.conclusion !== 'accepted') {
+          const tok = appliedTokens.find((t) => t.templateId === causal.tplId);
+          if (tok) rollback(tok.token); // 未显著改善 → 自动回滚
+        }
+      } else if (treated.length !== causal.treated.length) {
+        setCausal({ ...causal, treated });
+      }
+    }, [live?.interactions]);
 
     const tplMeta = { debounce_handler: { scope: 'EventTarget.addEventListener (click/input/key)', strategy: 'Handler 防抖' }, throttle_third_party: { scope: '跨域 <script> 插入', strategy: '第三方节流' }, lazy_load: { scope: 'img / iframe', strategy: '懒加载' }, memo_wrap: { scope: 'React 组件', strategy: 'Memo 提示' }, inject_cleanup: { scope: 'useEffect', strategy: 'Cleanup 提示' } };
 
@@ -160,6 +186,14 @@
       result && el(Card, { stroke: result.ok ? 'var(--good)' : 'var(--bad)', pad: 8,
         head: el(Head, { icon: result.ok ? 'circle-check' : 'triangle-alert', iconFill: result.ok ? 'var(--good)' : 'var(--bad)',
           title: (result.ok ? '✓ ' + result.msg : '✗ ' + (result.reason || 'failed')) }) }),
+      causal && el(Card, { stroke: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'var(--good)' : 'var(--bad)') : 'var(--accent)', pad: 8,
+        head: el(Head, { icon: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'circle-check' : 'triangle-alert') : 'loader-circle',
+          iconFill: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'var(--good)' : 'var(--bad)') : 'var(--accent)',
+          title: causal.phase === 'collecting'
+            ? '因果统计验证 · 采集中 ' + causal.treated.length + '/' + causal.need + '(继续浏览产生交互)'
+            : (causal.result && causal.result.conclusion === 'accepted'
+              ? '✓ 统计显著改善(effect ' + causal.result.effectSize.toFixed(0) + 'ms, p=' + causal.result.pValue.toFixed(3) + ') → 保留'
+              : '✗ 未达显著(' + (causal.result && causal.result.conclusion) + ', p=' + (causal.result && causal.result.pValue.toFixed(3)) + ') → 已回滚') }) }),
     );
   }
 
