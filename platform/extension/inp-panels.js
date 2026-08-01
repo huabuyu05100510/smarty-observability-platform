@@ -132,11 +132,8 @@
       if (treated.length >= causal.need) {
         const use = treated.slice(0, causal.need);
         const r = (globalThis.__causal && globalThis.__causal.runCausalValidation(causal.baseline, use, { direction: 'decrease', alpha: 0.05 })) || null;
+        // 不自动回滚:展示测量证据 + 解决方案 + 建议 MR,由用户决定保留/撤回(human-in-the-loop)
         setCausal({ ...causal, treated: use, result: r, phase: 'done' });
-        if (r && r.conclusion !== 'accepted') {
-          const tok = appliedTokens.find((t) => t.templateId === causal.tplId);
-          if (tok) rollback(tok.token); // 未显著改善 → 自动回滚
-        }
       } else if (treated.length !== causal.treated.length) {
         setCausal({ ...causal, treated });
       }
@@ -186,14 +183,18 @@
       result && el(Card, { stroke: result.ok ? 'var(--good)' : 'var(--bad)', pad: 8,
         head: el(Head, { icon: result.ok ? 'circle-check' : 'triangle-alert', iconFill: result.ok ? 'var(--good)' : 'var(--bad)',
           title: (result.ok ? '✓ ' + result.msg : '✗ ' + (result.reason || 'failed')) }) }),
-      causal && el(Card, { stroke: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'var(--good)' : 'var(--bad)') : 'var(--accent)', pad: 8,
-        head: el(Head, { icon: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'circle-check' : 'triangle-alert') : 'loader-circle',
-          iconFill: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'var(--good)' : 'var(--bad)') : 'var(--accent)',
+      causal && el(Card, { stroke: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'var(--good)' : 'var(--warn)') : 'var(--accent)', pad: 8, gap: 7,
+        head: el(Head, { icon: causal.phase === 'done' ? 'circle-check' : 'loader-circle',
+          iconFill: causal.phase === 'done' ? (causal.result && causal.result.conclusion === 'accepted' ? 'var(--good)' : 'var(--warn)') : 'var(--accent)',
           title: causal.phase === 'collecting'
             ? '因果统计验证 · 采集中 ' + causal.treated.length + '/' + causal.need + '(继续浏览产生交互)'
-            : (causal.result && causal.result.conclusion === 'accepted'
-              ? '✓ 统计显著改善(effect ' + causal.result.effectSize.toFixed(0) + 'ms, p=' + causal.result.pValue.toFixed(3) + ') → 保留'
-              : '✗ 未达显著(' + (causal.result && causal.result.conclusion) + ', p=' + (causal.result && causal.result.pValue.toFixed(3)) + ') → 已回滚') }) }),
+            : '验证完成 · effect ' + (causal.result && causal.result.effectSize.toFixed(0)) + 'ms, p=' + (causal.result && causal.result.pValue.toFixed(3)) + '(' + (causal.result && causal.result.conclusion === 'accepted' ? '显著改善' : '未达显著') + ')' }) },
+        causal.phase === 'done' && el(Txt, { content: 'baseline ' + (causal.result && causal.result.baseline.mean.toFixed(0)) + 'ms → treated ' + (causal.result && causal.result.treated.mean.toFixed(0)) + 'ms · 请你决定是否保留', size: 9.5, fill: 'var(--fg-2)', wrap: true, width: '100%' }),
+        causal.phase === 'done' && (globalThis.__inpMrDraft && globalThis.__inpMrDraft.TEMPLATE_DIFFS && globalThis.__inpMrDraft.TEMPLATE_DIFFS[causal.tplId]) && el('div', null,
+          el(Txt, { content: '建议 MR · 源码永久修复(占位,需人工确认):', size: 9, fill: 'var(--fg-3)' }),
+          el('pre', { style: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, padding: 6, fontSize: 9.5, fontFamily: 'var(--font-mono)', color: 'var(--fg-2)', margin: '4px 0', whiteSpace: 'pre', overflow: 'auto', maxHeight: 120 } }, (globalThis.__inpMrDraft.TEMPLATE_DIFFS[causal.tplId].diff || []).join('\n'))),
+        causal.phase === 'done' && el(Actions, { primary: '保留 patch', primaryIcon: 'circle-check', onPrimary: () => setCausal(null), ghost: '撤回 patch', ghostIcon: 'rotate-ccw', onGhost: () => { const tok = appliedTokens.find((t) => t.templateId === causal.tplId); if (tok) rollback(tok.token); setCausal(null); } })
+      ),
     );
   }
 
