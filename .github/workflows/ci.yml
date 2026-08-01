@@ -23,10 +23,10 @@ jobs:
           cache: pnpm
       - name: install (frozen lockfile · 可复现)
         run: pnpm install --frozen-lockfile
-      - name: typecheck
-        run: pnpm typecheck
       - name: build
         run: pnpm build
+      - name: typecheck
+        run: pnpm typecheck
       - name: test
         run: pnpm test
       - name: security-check
