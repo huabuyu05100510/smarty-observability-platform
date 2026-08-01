@@ -59,6 +59,14 @@ export interface ApplyResult {
 
 export type DeliveryResult = PrResult | { applied: boolean; rollback: () => void } | null;
 
+/** LLM 元信息（可审计）：记录决策所用 model/provider/temperature，不含 apiKey。
+ *  model 是决策非确定性的主要来源，记录之使每次决策可追溯（可复现性契约）。*/
+export interface ModelInfo {
+  model: string;
+  provider?: string;
+  temperature?: number;
+}
+
 export interface HealPipelineDeps {
   /** 1. Diagnose：产根因 + 补丁（LLM 多 agent 或 mock）*/
   diagnose: (retryContext?: string) => Promise<Diagnosis | null>;
@@ -92,6 +100,8 @@ export interface HealPipelineDeps {
   /** 回归重放次数（多数投票，默认 3 取 ≥2）。设 1 关闭多 replay（仅单测/确定性 mock 用）*/
   regressionReplays?: number;
   onLog?: (msg: string) => void;
+  /** 决策可审计元信息：本次运行所用 LLM（不含 apiKey）。纯元信息，不参与调用，回显到 result.models。*/
+  models?: { diagnoser?: ModelInfo; verifier?: ModelInfo };
 }
 
 export interface HealPipelineResult {
@@ -107,6 +117,8 @@ export interface HealPipelineResult {
   regressionVotes: { replays: number; reproPasses: number; suitePasses: number } | null;
   /** delivery != human（补丁通过门禁并交付）*/
   resolved: boolean;
+  /** 决策可审计元信息回显（来自 deps.models）。*/
+  models?: { diagnoser?: ModelInfo; verifier?: ModelInfo };
 }
 
 /**
@@ -246,6 +258,7 @@ export async function runHealPipeline(deps: HealPipelineDeps): Promise<HealPipel
       delivery: lastDelivery,
       attempts: attempt,
       regressionVotes: lastRegressionVotes,
+    models: deps.models,
       resolved: lastDecision.delivery !== 'human',
     };
   }
@@ -260,6 +273,7 @@ export async function runHealPipeline(deps: HealPipelineDeps): Promise<HealPipel
     delivery: lastDelivery,
     attempts: maxAttempts,
     regressionVotes: lastRegressionVotes,
+    models: deps.models,
     resolved: false,
   };
 }

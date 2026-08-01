@@ -304,6 +304,10 @@ export async function runRealHealPipeline(opts: HealRunnerOptions) {
     deliver,
     maxAttempts: opts.maxAttempts ?? 3,
     onLog: log,
+    models: {
+      diagnoser: { model: opts.diagnoserConfig.model, provider: opts.diagnoserConfig.provider, temperature: opts.diagnoserConfig.temperature },
+      verifier: { model: opts.verifierConfig.model, provider: opts.verifierConfig.provider, temperature: opts.verifierConfig.temperature },
+    },
   };
 
   return runHealPipeline(deps);
