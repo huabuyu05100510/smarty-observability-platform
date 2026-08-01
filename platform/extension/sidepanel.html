@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=460" />
+<title>INP / 错误 Copilot</title>
+<style>
+  @font-face { font-family:'Geist'; font-weight:400; font-style:normal; font-display:swap; src:url(./fonts/geist-latin-400-normal.woff2) format('woff2'); }
+  @font-face { font-family:'Geist'; font-weight:600; font-style:normal; font-display:swap; src:url(./fonts/geist-latin-600-normal.woff2) format('woff2'); }
+  @font-face { font-family:'Geist'; font-weight:700; font-style:normal; font-display:swap; src:url(./fonts/geist-latin-700-normal.woff2) format('woff2'); }
+  @font-face { font-family:'Geist Mono'; font-weight:400; font-style:normal; font-display:swap; src:url(./fonts/geist-mono-latin-400-normal.woff2) format('woff2'); }
+  @font-face { font-family:'Geist Mono'; font-weight:500; font-style:normal; font-display:swap; src:url(./fonts/geist-mono-latin-500-normal.woff2) format('woff2'); }
+  @font-face { font-family:'Geist Mono'; font-weight:600; font-style:normal; font-display:swap; src:url(./fonts/geist-mono-latin-600-normal.woff2) format('woff2'); }
+  :root {
+    --bg: #0A0A0A;
+    --surface: #121214;
+    --surface-2: #17171A;
+    --surface-3: #1F1F23;
+    --border: #27272A;
+    --border-2: #15151A;
+    --border-strong: #3F3F46;
+    --fg: #FFFFFF;
+    --fg-2: #A1A1AA;
+    --fg-3: #71717A;
+    --accent: #A855F7;
+    --accent-soft: #A855F726;
+    --good: #22C55E;
+    --good-soft: #22C55E1F;
+    --warn: #F59E0B;
+    --warn-soft: #F59E0B1F;
+    --bad: #EF4444;
+    --bad-soft: #EF44441F;
+    --info: #38BDF8;
+    --info-soft: #38BDF81F;
+    --font-ui: 'Geist', ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; min-width: 320px; height: 100vh;
+    background: var(--bg); color: var(--fg);
+    font-family: var(--font-ui); font-size: 12px; line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  body { overflow: hidden; }
+  button { font-family: inherit; }
+  input { font-family: inherit; outline: none; }
+  /* 滚动条 */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="vendor/react/umd/react.production.min.js"></script>
+<script src="vendor/react-dom/umd/react-dom.production.min.js"></script>
+<script src="db.js"></script>
+<script src="diagnose.js"></script>
+<script src="error-diagnose.js"></script>
+<script src="heal-templates.js"></script>
+<script src="mr-draft.js"></script>
+<script src="icons.js"></script>
+<script src="ui.js"></script>
+<script src="data.js"></script>
+<script src="error-panels.js"></script>
+<script src="inp-panels.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
