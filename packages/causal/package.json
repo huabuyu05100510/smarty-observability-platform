@@ -1,0 +1,21 @@
+{
+  "name": "@monit/causal",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "description": "⚠️ experimental: 自愈的科学验证地基 — CausalGraph schema(可序列化因果图) + InterventionProtocol(Welch t 统计裁决) + Tournament(多候选对抗锦标赛) + PerfModel(世界模型接口)。确定性优先,无 LLM 依赖。",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {}
+}
