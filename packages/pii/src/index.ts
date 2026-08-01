@@ -14,7 +14,8 @@ export interface RedactOptions {
   fieldMatcher?: (path: string, value: unknown) => boolean
 }
 
-/** 默认 PII 规则（顺序重要：JWT 在 email 前避免误匹配 base64 片段）。 */
+/** 默认 PII 规则（顺序重要：JWT/token 在 email 前避免误匹配 base64 片段）。
+ *  IPv4 默认【不启用】：`\d{1,3}(\.\d{1,3}){3}` 会误伤版本号(1.2.3.4)；如需可通过 patterns 显式追加。 */
 export const DEFAULT_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
   /\b(AKIA|ASIA)[0-9A-Z]{16}\b/g,
@@ -24,7 +25,10 @@ export const DEFAULT_PATTERNS: RegExp[] = [
   /\bgh[opsu]_[0-9A-Za-z]{36,}\b/g,
   /\bsk-(ant-)?[A-Za-z0-9_-]{20,}\b/g,
   /\b1[3-9]\d{9}\b/g,
+  /\b0\d{2,3}-?\d{7,8}\b/g, // 座机（010-87654321 / 01087654321）
   /\b\d{17}[\dXx]\b/g,
+  /\b\d{3}-\d{2}-\d{4}\b/g, // 美国 SSN
+  /\b62\d{14,17}\b/g, // 银联银行卡（62 开头 16-19 位）
   /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g,
 ]
 
@@ -85,7 +89,9 @@ export function redactPayloadWithReport<T>(input: T, opts: RedactOptions = {}): 
 }
 
 function redactString(s: string, patterns: RegExp[], replacement: string, report: RedactReport): string {
-  let out = s
+  // 全角 ASCII（含数字/字母）→ 半角：堵 "１３８..." 全角绕过。
+  // 脱敏 payload 供分析（非原始回显），全角转半角的轻微失真可接受。
+  let out = s.replace(/[！-～]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
   for (const re of patterns) {
     const reCopy = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`)
     const matches = out.match(reCopy)

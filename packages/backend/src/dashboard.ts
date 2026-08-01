@@ -69,10 +69,10 @@ function renderErrors(groups) {
   const el = document.getElementById('errors');
   if (groups.length === 0) { el.innerHTML = '<div class="empty">无错误事件</div>'; return; }
   el.innerHTML = groups.map(g =>
-    '<div class="row" onclick="showDetail(\\''+g.fingerprint+'\\')">' +
-      '<span class="count">'+g.count+'</span>' +
+    '<div class="row" onclick="showDetail(\\''+escapeHtml(g.fingerprint)+'\\')">' +
+      '<span class="count">'+escapeHtml(g.count)+'</span>' +
       '<span class="msg">'+escapeHtml(g.message.slice(0,80))+'</span>' +
-      '<div class="meta">'+g.subType+' · '+g.sessionsAffected.size+' sessions · last '+fmtTime(g.lastSeen)+'</div>' +
+      '<div class="meta">'+escapeHtml(g.subType)+' · '+(g.affectedSessions ?? 0)+' sessions · last '+fmtTime(g.lastSeen)+'</div>' +
     '</div>'
   ).join('');
 }
@@ -82,8 +82,8 @@ function renderVitals(vitals) {
   if (vitals.length === 0) { el.innerHTML = '<div class="empty">无 vital 数据</div>'; return; }
   el.innerHTML = vitals.map(v =>
     '<div class="vital">' +
-      '<span class="name">'+v.name+' <span class="'+ratingClass(v.worstRating)+'">('+v.worstRating+')</span></span>' +
-      '<span>p75='+v.p75.toFixed(0)+' / p99='+v.p99.toFixed(0)+'</span>' +
+      '<span class="name">'+escapeHtml(v.name)+' <span class="'+ratingClass(v.worstRating)+'">('+escapeHtml(v.worstRating)+')</span></span>' +
+      '<span>p75='+(v.p75||0).toFixed(0)+' / p99='+(v.p99||0).toFixed(0)+'</span>' +
     '</div>'
   ).join('');
 }
@@ -93,8 +93,8 @@ function renderSessions(sessions) {
   if (sessions.length === 0) { el.innerHTML = '<div class="empty">无 session</div>'; return; }
   el.innerHTML = sessions.slice(0, 20).map(s =>
     '<div class="row">' +
-      '<span class="msg">'+s.sessionId.slice(0,16)+'</span>' +
-      '<div class="meta">'+s.release+' · '+s.eventCount+' events · '+s.errorCount+' errors · '+fmtTime(s.lastSeen)+'</div>' +
+      '<span class="msg">'+escapeHtml((s.sessionId||'').slice(0,16))+'</span>' +
+      '<div class="meta">'+escapeHtml(s.release)+' · '+s.eventCount+' events · '+s.errorCount+' errors · '+fmtTime(s.lastSeen)+'</div>' +
     '</div>'
   ).join('');
 }

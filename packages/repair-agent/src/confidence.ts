@@ -1,11 +1,16 @@
 /**
- * @monit/repair-agent/confidence - 确定性×AI 信心门禁
+ * @monit/repair-agent/confidence - 【遗留】加权 score 信心门禁
  *
- * 研究原则（§6）："AI 只做规则结构上做不到的；AI 不做确定性门禁（幻觉风险）"。
- * 本模块是【确定性】门禁：综合 Verifier 结果 + 回归结果 + 改动局部性 + 测试覆盖，
- * 决定 high（自动 MR 草稿）/ low（仅诊断转人工）。
+ * ⚠️ 遗留实现：用未校准的加权 score（0.35/0.30/0.15/0.20，阈值 0.7）做门禁，
+ *    属于"伪精度"——加权无依据、阈值拍脑袋。且本函数【不校验 reproRedBefore / contamination】，
+ *    因此无法防止"通过测试≠真修复"的假阳性。
  *
- * 对标：SWE-bench Pro 企业真实 <18% -> 全自动仅限"测试充分 + 改动局部 + 强护栏"。
+ * 现行门禁请用 {@link import('./gate').assessGate | assessGate}：
+ *   - 确定性布尔向量 GateVector（repro 红转绿 / 套件 / 局部 / 污染 / Verifier）
+ *   - 显式档位匹配（auto-mr / hotfix / human），AI 不持有门禁
+ *   - 由 {@link import('./pipeline').runHealPipeline | runHealPipeline} 真正驱动
+ *
+ * 本模块仅保留向后兼容（旧 runHarness 路径），新代码勿用，README 示例亦应指向 assessGate。
  */
 
 import type { ConfidenceTier, PatchResult, VerifierResult } from '@monit/contracts';
@@ -36,6 +41,9 @@ export interface ConfidenceGateOutput {
 }
 
 /**
+ * @deprecated 遗留加权 score 门禁（未校准伪精度，且不校验 reproRedBefore/contamination）。
+ * 新代码请用 {@link import('./gate').assessGate | assessGate}（确定性布尔向量门禁）。
+ *
  * 确定性信心评分。每项 0/1，加权求和，阈值 0.7 -> high。
  * - Verifier 不被否（0.35）：逻辑验证通过，反事实未击穿
  * - 回归通过（0.30）：经验验证，错误不再复现

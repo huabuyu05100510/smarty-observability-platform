@@ -201,7 +201,11 @@ describe('端到端主链：采集 -> backend -> 诊断 -> LLM-RCA -> MR 草稿'
     expect(result.decision).toBe('auto-pr');
   });
 
-  it('运行时热修（轨道 A）：harness + Verifier + 信心门禁', async () => {
+  // 注意：本用例是【mock 化的 harness 单测】，不是真端到端 —— diagnose/inject/check/reset 全是 vi.fn，
+  // Verifier 也是 fetch mock。"错误不再触发" 断言的是 mock 计数，没有真实页面注入 / 真实独立模型 Verifier。
+  // 且它走的是【遗留】runHarness + assessConfidence（加权 score）路径；现行强门禁见
+  // repair-agent runHealPipeline + assessGate（由 coordinator /auto-heal?mode=strong 驱动，另测）。
+  it('轨道 A harness（mock 单测，非真 e2e）：legacy assessConfidence 门禁', async () => {
     let checkCalls = 0;
     const result = await runHarness({
       diagnose: vi.fn(async () => ({
@@ -210,9 +214,9 @@ describe('端到端主链：采集 -> backend -> 诊断 -> LLM-RCA -> MR 草稿'
         patch: { patchType: 'replace' as const, targetFunction: 'renderList', targetPath: 'window.renderList', code: 'function(){return []}' },
       })),
       inject: vi.fn(async () => ({ injected: true })),
-      check: vi.fn(async () => { checkCalls++; return false; }), // 错误不再触发
+      check: vi.fn(async () => { checkCalls++; return false; }), // 错误不再触发（mock）
       reset: vi.fn(async () => {}),
-      verifierConfig: { baseUrl: 'http://x', model: 'm' }, // 启用 Verifier
+      verifierConfig: { baseUrl: 'http://x', model: 'm' }, // 启用 Verifier（mock 返回 accepted）
       locality: { filesChanged: 1, linesChanged: 8, hasTestCoverage: true, typecheckPasses: true },
       maxAttempts: 3,
     });
@@ -224,7 +228,9 @@ describe('端到端主链：采集 -> backend -> 诊断 -> LLM-RCA -> MR 草稿'
     expect(result.verifierResult?.refuted).toBe(false);
   });
 
-  it('数据溯源 DAG：DOM 错值 <- JS <- API span', () => {
+  // 注意：ProvenanceGraph 当前是【孤儿包】（未接进 live pipeline），本用例只验证 BFS 遍历算法本身，
+  // 不代表真实"DOM 错值 ← JS ← API ← span"链路已被任何采集/后端数据填充。
+  it('provenance DAG 遍历（孤儿包，仅算法验证）：DOM 错值 <- JS <- API span', () => {
     const g = new ProvenanceGraph();
     g.addNode({ id: 'span1', kind: 'span', label: 'GET /api/users', traceSpanId: 'span1' });
     g.addNode({ id: 'api1', kind: 'api', label: 'data.users', fieldPath: 'data.users', traceSpanId: 'span1' });

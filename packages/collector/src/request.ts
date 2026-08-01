@@ -108,16 +108,20 @@ export function installRequestMonitor(opts: RequestMonitorOptions, cb: RequestCa
         if (ignore(url)) return originalFetch(input, init);
 
         const newInit: RequestInit = init ? { ...init } : {};
-        if (inject) {
-          newInit.headers = new Headers(init?.headers);
-          injectHeader(url, newInit.headers as Headers);
-        }
+        const headers = new Headers(init?.headers);
+        if (inject) injectHeader(url, headers);
+        newInit.headers = headers;
         const requestBody = typeof init?.body === 'string' ? init.body.slice(0, 500) : '';
         const graphql = extractGraphQL(init?.body);
         const start = Date.now();
 
+        // 当 input 是 Request 时，spec 规定 Request 自带 headers 优先于 init.headers，
+        // 直接 originalFetch(input, newInit) 会丢掉注入的 traceparent —— 必须重建 Request。
+        let finalInput: RequestInfo | URL = input;
+        if (input instanceof Request) finalInput = new Request(input, newInit);
+
         try {
-          const response = await originalFetch(input as RequestInfo, newInit);
+          const response = await originalFetch(finalInput, input instanceof Request ? undefined : newInit);
           const duration = Date.now() - start;
 
           if (!response.ok) {
@@ -161,12 +165,23 @@ export function installRequestMonitor(opts: RequestMonitorOptions, cb: RequestCa
       const urlKey = mark + ':url';
       const methodKey = mark + ':method';
       const startKey = mark + ':start';
+      const tpKey = mark + ':tp'; // 业务是否已显式设 traceparent
 
+      // open：只 patch 一次（之前在此处 + 末尾 patch 了两次 open，产生嵌套包装、丢原引用）。
+      // 仅 stash url/method；traceparent 统一在 send 前注入，避免重复/竞争。
       XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string, ...rest: unknown[]) {
         // @ts-expect-error stash
         this[urlKey] = url; this[methodKey] = method;
         // @ts-expect-error forward
         return originalOpen.call(this, method, url, ...rest);
+      };
+      // setRequestHeader：业务若显式设 traceparent，标记由其接管，send 时不再自动注入
+      XMLHttpRequest.prototype.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
+        if (name.toLowerCase() === TRACEPARENT_HEADER) {
+          // @ts-expect-error mark
+          this[tpKey] = true;
+        }
+        return originalSetHeader.call(this, name, value);
       };
       XMLHttpRequest.prototype.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
         // @ts-expect-error read
@@ -175,6 +190,17 @@ export function installRequestMonitor(opts: RequestMonitorOptions, cb: RequestCa
         const method: string = (this[methodKey] ?? 'GET').toUpperCase();
         // @ts-expect-error set
         this[startKey] = Date.now();
+        // 注入 traceparent（同源、未被业务显式设）
+        if (inject && isSameOrigin(url)) {
+          // @ts-expect-error read
+          const alreadySet: boolean = !!this[tpKey];
+          if (!alreadySet) {
+            const span = traceContext.forRequest();
+            if (span) {
+              try { originalSetHeader.call(this, TRACEPARENT_HEADER, encodeTraceparent(span)); } catch { /* wrong state */ }
+            }
+          }
+        }
         if (!ignore(url)) {
           this.addEventListener('loadend', () => {
             // @ts-expect-error read
@@ -189,30 +215,6 @@ export function installRequestMonitor(opts: RequestMonitorOptions, cb: RequestCa
           });
         }
         return originalSend.call(this, body);
-      };
-      // traceparent 注入（同源）：setRequestHeader 时若未设则补
-      XMLHttpRequest.prototype.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
-        // @ts-expect-error read
-        const url: string = this[urlKey] ?? '';
-        if (inject && isSameOrigin(url) && name.toLowerCase() === TRACEPARENT_HEADER) {
-          // 业务已显式设 traceparent，标记不再自动注入
-          // @ts-expect-error mark
-          this[mark + ':tp'] = true;
-        }
-        return originalSetHeader.call(this, name, value);
-      };
-      // open 后 send 前自动注入 traceparent：在 open 末尾补一次 setRequestHeader
-      const origOpen2 = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (this: XMLHttpRequest, method: string, url: string, ...rest: unknown[]) {
-        // @ts-expect-error forward
-        const r = origOpen2.call(this, method, url, ...rest);
-        if (inject && isSameOrigin(url)) {
-          const span = traceContext.forRequest();
-          if (span) {
-            try { originalSetHeader.call(this, TRACEPARENT_HEADER, encodeTraceparent(span)); } catch { /* state */ }
-          }
-        }
-        return r;
       };
       // @ts-expect-error mark
       XMLHttpRequest.prototype[mark] = true;

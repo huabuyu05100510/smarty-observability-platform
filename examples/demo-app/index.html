@@ -1,70 +1,12 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>smarty-observability-platform · demo</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
-    button { padding: 8px 16px; margin: 4px 4px 4px 0; cursor: pointer; }
-    pre { background: #f4f4f5; padding: 12px; border-radius: 6px; overflow: auto; }
-    .ok { color: #16a34a; } .err { color: #dc2626; }
-  </style>
-</head>
-<body>
-  <h1>smarty-observability-platform demo</h1>
-  <p>触发各类前端问题，验证采集 + traceparent 注入 + 自愈主链。</p>
-
-  <h3>1. 触发错误</h3>
-  <button onclick="triggerJsError()">JS 错误（null 解引用）</button>
-  <button onclick="triggerPromiseError()">Promise rejection</button>
-  <button onclick="triggerLongTask()">长任务（阻塞 200ms）</button>
-
-  <h3>2. traceparent 注入</h3>
-  <button onclick="sendTracedRequest()">发送带 traceparent 的请求</button>
-
-  <h3>输出</h3>
-  <pre id="out">// 点击上方按钮查看输出</pre>
-
-  <script type="module">
-    // 真实环境：import { installTracePropagation, traceContext } from '@monit/trace'
-    // 此 demo 需先 pnpm build，再用打包产物。此处用内联最小实现演示 traceparent 注入。
-    window.__traceId = crypto.randomUUID().replace(/-/g, '').padEnd(32, '0').slice(0, 32);
-
-    const origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      init = init ?? {};
-      init.headers = new Headers(init.headers);
-      if (!init.headers.has('traceparent')) {
-        const spanId = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
-        init.headers.set('traceparent', `00-${window.__traceId}-${spanId}-01`);
-      }
-      log('→ traceparent 注入: ' + init.headers.get('traceparent'));
-      return origFetch(input, init);
-    };
-
-    function log(msg) {
-      const out = document.getElementById('out');
-      out.textContent = msg + '\n' + out.textContent;
-    }
-    window.__log = log;
-
-    window.triggerJsError = () => {
-      try { (null).map(x => x); } catch (e) { log('✓ 捕获 JS 错误: ' + e.message); }
-    };
-    window.triggerPromiseError = () => {
-      Promise.reject(new Error('demo promise rejection')).catch(e => log('✓ 捕获 rejection: ' + e.message));
-    };
-    window.triggerLongTask = () => {
-      const start = performance.now();
-      while (performance.now() - start < 200) { /* block */ }
-      log('✓ 长任务阻塞 ' + Math.round(performance.now() - start) + 'ms');
-    };
-    window.sendTracedRequest = () => {
-      window.fetch('/api/demo').catch(() => log('（请求已带 traceparent，/api/demo 不存在属预期）'));
-    };
-
-    log('traceId = ' + window.__traceId);
-  </script>
-</body>
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>monit demo app · 真实采集</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

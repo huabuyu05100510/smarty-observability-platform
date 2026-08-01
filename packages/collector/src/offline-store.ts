@@ -55,9 +55,8 @@ export async function createIdbOfflineStore(): Promise<OfflineStore | null> {
   if (!db) return null
   return {
     async add(item: Omit<OfflineQueueItem, 'id'>): Promise<void> {
-      try {
-        reqToPromise(tx(db, 'readwrite').add(item as OfflineQueueItem)).catch(() => {})
-      } catch { /* ignore */ }
+      // 不吞错：IDB 写失败时 reject 传播给 reporter（reporter 记 warn，不再静默丢）
+      await reqToPromise(tx(db, 'readwrite').add(item as OfflineQueueItem))
     },
     async all(): Promise<OfflineQueueItem[]> {
       try {
@@ -67,14 +66,10 @@ export async function createIdbOfflineStore(): Promise<OfflineStore | null> {
       }
     },
     async remove(id: number): Promise<void> {
-      try {
-        reqToPromise(tx(db, 'readwrite').delete(id)).catch(() => {})
-      } catch { /* ignore */ }
+      await reqToPromise(tx(db, 'readwrite').delete(id))
     },
     async update(item: OfflineQueueItem): Promise<void> {
-      try {
-        reqToPromise(tx(db, 'readwrite').put(item)).catch(() => {})
-      } catch { /* ignore */ }
+      await reqToPromise(tx(db, 'readwrite').put(item))
     },
   }
 }

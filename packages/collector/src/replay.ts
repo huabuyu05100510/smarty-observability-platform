@@ -4,6 +4,12 @@
  * 移植自 monitor-sdk/packages/session-replay/recorder.ts（手写最简，不引 rrweb）。
  * snapshot 全 DOM → MutationObserver 增量 → input（默认 mask value，PII 安全）→ 30s 环形缓冲。
  * 错误触发时 getSnapshot() 塞入错误事件 payload.sessionReplay，供回放还原用户操作路径。
+ *
+ * 本轮加固（体积治理 + PII）：
+ * - getSnapshot 字节预算（默认 32KB）：超限从最老 mutation/input 裁剪（保留 snapshot + 最近窗口），
+ *   仍超则截断 snapshot 深度；置 truncated 标记。根治"sessionReplay 无上限拖垮整批上报"。
+ * - serialize 深度上限（默认 32）：防深嵌套 DOM 栈溢出/巨型序列化。
+ * - 属性 PII 白名单：不录 value/placeholder/title/alt/data-monit-record（仅结构相关）。
  */
 
 export interface SerializedNode {
@@ -40,6 +46,9 @@ export interface ReplayData {
   endedAt: number
   events: ReplayEvent[]
   nodeCount: number
+  /** 是否因字节预算裁剪过 */
+  truncated?: boolean
+  truncatedReason?: string
 }
 
 export interface RecorderOptions {
@@ -48,12 +57,20 @@ export interface RecorderOptions {
   /** input value 是否默认 mask，默认 true（PII 安全） */
   maskInputs?: boolean
   recordInputs?: boolean
+  /** getSnapshot 字节预算，默认 32768（32KB）。超限裁剪 + truncated 标记 */
+  maxBytes?: number
+  /** DOM 序列化深度上限，默认 32（防栈溢出/巨型） */
+  maxDepth?: number
 }
 
 const DEFAULT_WINDOW_MS = 30_000
+const DEFAULT_MAX_BYTES = 32_768
+const DEFAULT_MAX_DEPTH = 32
 const MASK_VALUE = '***'
 
 const IGNORE_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT'])
+/** 不录的 PII 属性（value/placeholder/title/alt 等可能含个人信息）—— 仅录结构相关 */
+const PII_ATTRIBUTES = new Set(['value', 'placeholder', 'title', 'alt', 'data-monit-record'])
 
 export class Recorder {
   private events: ReplayEvent[] = []
@@ -71,6 +88,8 @@ export class Recorder {
       windowMs: opts.windowMs ?? DEFAULT_WINDOW_MS,
       maskInputs: opts.maskInputs ?? true,
       recordInputs: opts.recordInputs ?? true,
+      maxBytes: opts.maxBytes ?? DEFAULT_MAX_BYTES,
+      maxDepth: opts.maxDepth ?? DEFAULT_MAX_DEPTH,
     }
   }
 
@@ -99,7 +118,7 @@ export class Recorder {
     return id
   }
 
-  private serialize(node: Node): SerializedNode {
+  private serialize(node: Node, depth = 0): SerializedNode {
     const id = this.idOf(node)
     if (node.nodeType === 3) return { nodeType: 3, id, textContent: (node.textContent ?? '').slice(0, 500) }
     if (node.nodeType === 8) return { nodeType: 8, id, textContent: node.textContent ?? '' }
@@ -108,15 +127,17 @@ export class Recorder {
     const el = node as Element
     const tagName = el.tagName
     if (IGNORE_TAGS.has(tagName)) return { nodeType: 1, id, tagName: tagName.toLowerCase(), attributes: {} }
+    // 深度上限：防深嵌套 DOM 栈溢出/巨型序列化
+    if (depth >= this.opts.maxDepth) return { nodeType: 1, id, tagName: tagName.toLowerCase(), attributes: { 'data-monit-truncated': 'depth' } }
 
     const attributes: Record<string, string> = {}
     for (let i = 0; i < el.attributes.length; i++) {
       const a = el.attributes[i]
-      // 不录潜在 PII 属性（value/placeholder 等）—— 仅录结构相关
-      if (!['value', 'data-monit-record'].includes(a.name)) attributes[a.name] = a.value
+      // 不录 PII 属性（value/placeholder/title/alt 等）—— 仅录结构相关
+      if (!PII_ATTRIBUTES.has(a.name)) attributes[a.name] = a.value
     }
     const children: SerializedNode[] = []
-    for (let i = 0; i < el.childNodes.length; i++) children.push(this.serialize(el.childNodes[i]!))
+    for (let i = 0; i < el.childNodes.length; i++) children.push(this.serialize(el.childNodes[i]!, depth + 1))
     return { nodeType: 1, id, tagName: tagName.toLowerCase(), attributes, children }
   }
 
@@ -169,20 +190,48 @@ export class Recorder {
     if (firstKept > 0) {
       const dropped = this.events.slice(0, firstKept)
       this.events = this.events.slice(firstKept)
-      // 若丢掉了 snapshot，补一条当前 DOM snapshot
       if (dropped.some((e) => e.type === 'snapshot') && typeof document !== 'undefined') {
         this.events.unshift({ type: 'snapshot', timestamp: this.events[0]?.timestamp ?? Date.now(), data: this.serialize(document.documentElement) })
       }
     }
   }
 
-  /** 取当前窗口内的回放数据（错误触发时塞 payload.sessionReplay） */
+  /**
+   * 取当前窗口内的回放数据（错误触发时塞 payload.sessionReplay）。
+   * 字节预算治理：超 maxBytes 时从最老 mutation/input 裁剪（保留 snapshot + 最近窗口），
+   * 仍超则截断 snapshot 深度；置 truncated 标记。
+   */
   getSnapshot(): ReplayData {
+    const budget = this.opts.maxBytes
+    const enc = new TextEncoder()
+    const sizeOf = (evs: ReplayEvent[]): number => enc.encode(JSON.stringify(evs)).byteLength
+
+    let events = [...this.events]
+    let truncated = false
+    let truncatedReason: string | undefined
+
+    if (events.length > 0 && sizeOf(events) > budget) {
+      const snap = events.find((e) => e.type === 'snapshot') as Extract<ReplayEvent, { type: 'snapshot' }> | undefined
+      const rest = events.filter((e) => e.type !== 'snapshot')
+      while (rest.length > 0 && sizeOf([...(snap ? [snap] : []), ...rest]) > budget) {
+        rest.shift()
+      }
+      events = [...(snap ? [snap] : []), ...rest]
+      truncated = true
+      truncatedReason = 'trimmed-to-byte-budget'
+      if (snap && sizeOf(events) > budget) {
+        snap.data = truncateNode(snap.data, this.opts.maxDepth)
+        truncatedReason = 'snapshot-depth-truncated'
+      }
+    }
+
     return {
       startedAt: this.startedAt,
       endedAt: this.endedAt || Date.now(),
-      events: [...this.events],
+      events,
       nodeCount: this.nextId - 1,
+      truncated,
+      truncatedReason,
     }
   }
 
@@ -200,9 +249,17 @@ export class Recorder {
   }
 }
 
+/** 截断 SerializedNode 到指定深度（巨型 snapshot 兜底）。返回新对象（不改原引用）。 */
+function truncateNode(node: SerializedNode, maxDepth: number, depth = 0): SerializedNode {
+  if (depth >= maxDepth || !node.children || node.children.length === 0) {
+    return node.children && node.children.length > 0 ? { ...node, children: [] } : node
+  }
+  return { ...node, children: node.children.map((c) => truncateNode(c, maxDepth, depth + 1)) }
+}
+
 function describeSelector(el: Element): string {
   const tag = el.tagName?.toLowerCase() ?? 'unknown'
   const id = el.id ? `#${el.id}` : ''
-  const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(/\s+/).slice(0, 2).join('.')}` : ''
+  const cls = el.className && typeof el.className === 'string' ? `.${el.className.split(/\s+/).filter(Boolean).slice(0, 2).join('.')}` : ''
   return `${tag}${id}${cls}`
 }

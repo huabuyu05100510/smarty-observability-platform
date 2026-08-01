@@ -34,7 +34,7 @@
 ┌──────────────────────────────────────────────────────────────────┐
 │ L6 修复闭环  @monit/repair-agent + @monit/coordinator + guardrails │
 │   diagnose → ★ verifyAdversarially → inject → regression-vote      │
-│   → ★ assessConfidence → 轨道A 热修 / 轨道B MR草稿                  │
+│   → ★ assessGate(GateVector) → 轨道A 热修 / 轨道B MR草稿            │
 ├──────────────────────────────────────────────────────────────────┤
 │ L4 根因     @monit/diagnose（确定性规则 + 火焰图 + 变更关联全量） │
 ├──────────────────────────────────────────────────────────────────┤
@@ -45,6 +45,34 @@
 │              reporter，产出带 traceId 的 MonitorEvent）              │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+## 能力矩阵（如实标注实现度）
+
+代表作级 = 每条主张都有真实跑通的路径支撑。下表四列：**设计 / 单测 / 端到端接线 / 真实外部联调**。
+孤岛能力（只到单测、没接进真链路）会显式标出，不混为一谈。随重构进度更新。
+
+| 能力 | 设计 | 单测 | 端到端接线 | 真实外部联调 |
+|---|---|---|---|---|
+| contracts / W3C traceparent / 双维指纹 | ✓ | ✓ | ✓ | ✓ |
+| 采集 SDK（vitals+LoAF+LCP归因 / 6 类错误 / 请求 / replay / PII / 采样 / 离线 / 白屏检测 / 行为沮丧） | ✓ | ✓ | ✓ | ✓ |
+| 确定性 RCA + 变更关联（关联型，否决 SCM） | ✓ | ✓ | ✓ | - |
+| **跨层 trace join（性能皇冠）**：前端 report.traceId ↔ 后端 span | ✓ | ✓ | ✓ | - |
+| 后端 ingest + 指纹聚合 + vital p75/p99 + span store + 白屏/行为聚合 + 面板 | ✓ | ✓ | ✓ | ✓ |
+| sourcemap 还原（真实 source-map） | ✓ | ✓ | ✓ | - |
+| **Verifier 对抗验证（跨 provider 独立模型）** | ✓ | ✓ | ✓ | ✓ 真实联调 |
+| **repro-test 回归（红转绿 + 套件不破）** | ✓ | ✓ | ✓ | ✓ 真实联调 |
+| **信心门禁（GateVector 向量，替加权 score）** | ✓ | ✓ | ✓ | ✓ 真实联调 |
+| 测试充分性（repro 替代字符串启发式）/ 污染检测（真实 goldPatch） | ✓ | ✓ | ✓ | - |
+| 白屏检测 + 因果归因（按 error/resource 时序定位） | ✓ | ✓ | ✓ | - |
+| 行为沮丧信号（rage/dead click / erratic mouse） | ✓ | ✓ | ✓ | - |
+| 运行时热修（轨道 A：patch-registry-over-SDK + HMAC 签名 + 真 rollback，非 CDP） | ✓ | ✓ | ✓ | - |
+| **极致闭环单漏斗 runHealPipeline**（diagnose→verify→repro→gate→PR） | ✓ | ✓ | ✓ | ✓ 真开 PR |
+| 真实端到端留痕（真 LLM 跨 provider + 真 PR） | - | - | - | ✓ 见下 |
+
+> **代表作留痕（真实联调，非 demo）**：`node scripts/showcase-record.mjs` 真实跑通单漏斗 ——
+> ARK doubao 诊断 + **MiniMax 跨 provider 独立 Verifier** + LLM 生成 repro 测试（红转绿）+ GateVector →
+> 真实开出 GitHub PR。独立 Verifier 实测拦截了诊断的"过度泛化"（同模型 Verifier 放行、跨 provider Verifier 否决），
+> 正是 BP-2 独立对抗的价值实证。详见 `docs/代表作留痕.md` 与 `showcase/run-*.md`。
 
 ## 自愈循环（核心创新）
 
@@ -83,7 +111,7 @@ Diagnoser(LLM) 生成根因 + 补丁
 | `@monit/collector` | 浏览器采集 | Web Vitals+LoAF / error+指纹 / 面包屑 / reporter，产出 MonitorEvent |
 | `@monit/llm-rca` | LLM 根因 | ★Navigator/Diagnoser/Verifier 多 agent + 残差融合（对标 F1 88.4%，喂结构化上下文）|
 | `@monit/backend` | ingest + 面板 | 指纹分组聚合 + vital p75/p99 + session + 内置 HTML 面板 |
-| `@monit/provenance` | 数据溯源 DAG | 屏幕值 ← 接口字段 ← 后端 span 反向溯源（tracesdk 独门）|
+| `@monit/provenance` | 数据溯源 DAG（**实验/未接线**） | 屏幕值 ← 接口字段 ← 后端 span 反向溯源。当前为孤儿包：仅算法自测，未接进采集/后端链路，`AttributionRecord` 亦无 `provenanceNode` 字段 |
 | `@monit/diagnose`（含差异火焰图） | 性能回归 | buildDiffFlamegraph：红=回归/蓝=改善，对标 Brendan Gregg |
 
 ## 用法
@@ -101,33 +129,41 @@ pnpm seed          # 另开终端，灌入示例错误 + Web Vitals
 开发命令：
 
 ```bash
-pnpm test          # 123 个测试
+pnpm test          # 全量测试（vitest，详见 `pnpm test` 输出）
 pnpm typecheck     # 类型检查
 pnpm build         # 构建所有包
 ```
 
 ### 跑自愈循环（示例）
 
-```ts
-import { runHarness, verifyAdversarially, assessConfidence } from '@monit/repair-agent';
+headline API 是 `runHealPipeline`（单漏斗）+ `assessGate`（确定性 GateVector 门禁），
+由 `@monit/coordinator` 的 `runRealHealPipeline` 装配到真实 fs/vitest/git/PR。
+（`assessConfidence` 是遗留加权 score 门禁，未校准且不查 reproRedBefore/contamination，已弃用。）
 
-const result = await runHarness({
-  diagnose: myDiagnoser,        // LLM 或 mock
-  verifierConfig: llmConfig,    // 启用 Verifier 对抗验证
-  inject: cdpInject,            // CDP Runtime.evaluate
-  check: errorStillFires,       // 回放检查
-  reset: resetErrorCount,
-  locality: { filesChanged: 1, linesChanged: 12, hasTestCoverage: true, typecheckPasses: true },
-  maxAttempts: 3,
+```ts
+import { runRealHealPipeline } from '@monit/coordinator';
+
+// diagnose(LLM) → 独立模型 Verifier(BP-2) → repro 红转绿(BP-3) → 3-replay 回归投票
+// → assessGate(GateVector, BP-4) → auto-mr / hotfix / human
+const result = await runRealHealPipeline({
+  repoRoot,
+  diagnoserConfig: llmConfig,
+  verifierConfig: independentLlmConfig, // 须与 diagnoser 不同 model id（BP-2 独立对抗）
+  symptom, stack,
+  focusFiles,                  // 错误栈帧关联的源文件
+  githubConfig,                // auto-mr 时开 PR（人审兜底）
+  behaviorPreserving: false,   // MR 轨（治本）；热修轨传 true
 });
 
-if (result.resolved && result.confidence?.canAutoApply) {
-  // 高信心 → 自动开 MR 草稿（人审）
-  await createGithubPr(githubConfig, proposal, branch);
+if (result.resolved && result.decision?.delivery === 'auto-mr') {
+  // 高信心 → 已自动开 MR 草稿（Verifier✓ + repro 红转绿 + 回归投票✓ + 局部 + 无污染 + 类型✓）
 } else {
-  // 低信心 → 仅诊断转人工
+  // 低信心 → 转人工（AI 不持有确定性门禁；回归失败 / Verifier 否决 = 永不自动）
 }
 ```
+
+HTTP 入口：`POST /auto-heal`（coordinator）—— 齐备 `repoRoot` + `verifierConfig` 时自动走 strong 轨
+（完整门禁），否则回退 draft 轨（仅 guardrails），响应体 `track` 字段显式标注走了哪条。
 
 ---
 
@@ -149,6 +185,30 @@ if (result.resolved && result.confidence?.canAutoApply) {
 5. **contamination 检测**（`@monit/guardrails`：补丁是否逐字/近似复现 gold patch，防数据污染）
 6. **信心门禁**（改动局部 + 类型通过才自动 MR；回归失败/Verifier 否决 = 永不自动）
 7. **人审兜底**（全自动 MR <18%，半自动是现实范式）
+
+## 安全加固（生产级重写 · 不可绕过）
+
+本轮针对 code review 发现的三类系统性结构问题做实，准则"不可绕过任何逻辑"：
+
+**鉴权链**（新增 `@monit/server-kit`，backend + coordinator 共享 `HttpRouter`）：
+- 所有写端点强制过中间件（鉴权 / Origin 白名单 / 限流 / 有界 body / 审计），dispatch 层强制、非 opt-in；
+- bearer token 常量时间比较；未配 token 时 loopback 放行、非 loopback 拒绝；
+- CORS 不再用 `*`，按 Origin 白名单回显 + `Vary: Origin`（堵任意网页 CSRF 触发开 PR）；
+- readBody 字节上限 + `req.destroy()`（堵 OOM）；per-IP 令牌桶限流；
+- `pnpm security-check`（`node scripts/security-check.mjs`）自检 8 项：错 token 401 / 跨源 403 / body 超限 413 / 路径穿越 400 / AST 拒绝 / 公钥下发。
+
+**Ed25519 非对称签名**（运行时热修，替对称 HMAC —— 密钥不分发）：
+- 服务端私钥签名，SDK 持公钥验签（`GET /heal/public-key` 下发）→ 不可伪造；
+- payload 含 nonce + expiresAt → 防重放 + 防 TTL 绕过；SDK nonce LRU 去重；
+- 登记时 acorn AST 严格白名单（禁网络/全局/DOM/原型链/循环/NewExpression）→ 恶意 code 进不了注册表。
+
+**门禁输入做实**（确定性门禁，AI 不持有）：
+- verifier 三态如实进 gate（pass/refuted/skipped，消灭硬编码 `pass`）+ 置信度经阈值转 `verifierConfident` 进门禁；
+- verifier 与 diagnoser 强制不同 model（BP-2 运行时硬断言）；
+- `redBefore` 只认断言失败（vitest json 解析 fail-assertion/fail-error/timeout）→ 防伪复现绕过红转绿；
+- `locality` 用真实 LCS 行 diff（非 replaceCode 行数高估）；contamination 全档位阻断（auto-mr 与 hotfix 均不放行污染补丁）。
+
+**其余工程加固**：sourcemap 路径白名单 + realpath（防 symlink 越界）；删 `execSync(curl)` 改异步 fetch；子进程一律 `execFileSync`（shell:false）消除命令注入；持久化逐事件 append（缩小崩溃窗口）+ 先落盘后内存；ingest 每条 schema 校验（畸形不致整批 500 + store 半一致）；sessionReplay 字节预算裁剪 + truncated；PII 补座机/SSN/银行卡 + 全角归一化（堵 `１３８…` 绕过）+ `report()` 补脱敏；diagnose 补 LCP/CLS/白屏归因。
 
 ## 路线图
 

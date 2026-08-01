@@ -157,8 +157,80 @@ export function analyzeRootCauses(report: DiagnosticReport): AttributionRecord[]
     });
   }
 
+  // ── LCP 归因 ───────────────────────────────────────────────────────────
+  const lcp = report.vitals.find((v) => v.name === 'LCP');
+  if (lcp && lcp.value > 2500) {
+    const attr = (lcp.attribution ?? {}) as { url?: string; element?: string };
+    const candidate: AttributionCandidate = {
+      kind: attr.url ? 'lcp.resource' : 'lcp.element',
+      confidence: 0.7,
+      evidence: [`LCP=${lcp.value}ms (${lcp.rating})`, attr.url ? `resource: ${attr.url}` : `element: ${attr.element ?? '?'}`],
+      anchors: { scriptURL: attr.url },
+      suggestedHealIds: [],
+    };
+    records.push({
+      id: uid('attr', i++),
+      symptomId: 'lcp',
+      symptom: { kind: 'perf', metric: 'LCP', observed: lcp.value },
+      candidates: [candidate],
+      severity: lcp.value > 4000 ? 'critical' : 'warning',
+      createdAt: report.createdAt,
+    });
+  }
+
+  // ── CLS 归因 ───────────────────────────────────────────────────────────
+  const cls = report.vitals.find((v) => v.name === 'CLS');
+  if (cls && cls.value > 0.1) {
+    const attr = (cls.attribution ?? {}) as { shifts?: Array<{ target?: string }>; target?: string };
+    const target = attr.target ?? attr.shifts?.[0]?.target;
+    const candidate: AttributionCandidate = {
+      kind: 'cls.shift',
+      confidence: 0.6,
+      evidence: [`CLS=${cls.value} (${cls.rating})`, target ? `largest shift: ${target}` : 'no shift target'],
+      anchors: { interactionTarget: target },
+      suggestedHealIds: [],
+    };
+    records.push({
+      id: uid('attr', i++),
+      symptomId: 'cls',
+      symptom: { kind: 'perf', metric: 'CLS', observed: cls.value },
+      candidates: [candidate],
+      severity: cls.value > 0.25 ? 'critical' : 'warning',
+      createdAt: report.createdAt,
+    });
+  }
+
+  // ── 白屏归因（collector classifyWhiteScreen 已做因果，此处转成候选记录）────────
+  if (report.whiteScreen?.detected) {
+    const ws = report.whiteScreen;
+    const evidence = [
+      `rootCause=${ws.rootCause}`,
+      ...ws.recentErrors.slice(0, 3).map((e) => `${e.type ?? 'err'}: ${e.message}`),
+    ];
+    if (ws.failedResources.length) evidence.push(`failed: ${ws.failedResources.slice(0, 3).map((r) => r.url).join(', ')}`);
+    const candidate: AttributionCandidate = {
+      kind: 'white_screen',
+      confidence: 0.8,
+      evidence,
+      anchors: {},
+      suggestedHealIds: ['inject_error_boundary_hint'],
+    };
+    records.push({
+      id: uid('attr', i++),
+      symptomId: 'white-screen',
+      symptom: { kind: 'white-screen', observed: ws.rootCause },
+      candidates: [candidate],
+      severity: 'critical',
+      createdAt: report.createdAt,
+    });
+  }
+
   // 按严重度、候选置信度排序
   const sevRank: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
+  // 跨层 trace join：每条 record 携带 report.traceId（供 join 后端 span）
+  if (report.traceId) {
+    for (const r of records) r.traceId = report.traceId;
+  }
   records.sort((a, b) => {
     const s = sevRank[a.severity] - sevRank[b.severity];
     if (s !== 0) return s;
@@ -247,5 +319,5 @@ export function buildReportSummary(report: DiagnosticReport): {
 
 export { buildPerfFlamegraph, buildDiffFlamegraph, type DiffFlamegraphData, type DiffFlameRow } from './flamegraph';
 export { correlateChange, type ChangeEvent, type AnomalySignal, type CorrelationOptions } from './change-correlation';
-export { diagnoseWithCorrelation, type DiagnoseWithCorrelationInput } from './full';
+export { diagnoseWithCorrelation, joinTraceSpans, type DiagnoseWithCorrelationInput } from './full';
 export { buildReportFromEvents, type BuildReportOptions } from './report-builder';

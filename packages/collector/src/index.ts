@@ -17,6 +17,9 @@ import { Reporter, type OfflineStore } from './reporter';
 import { createIdbOfflineStore } from './offline-store';
 import { installRequestMonitor } from './request';
 import { Recorder } from './replay';
+import { installWhiteScreen } from './white-screen';
+import { installBehavior } from './behavior';
+import { HotfixClient, type RuntimePatch } from './hotfix';
 import { redactPayload, type RedactOptions } from '@monit/pii';
 import { HeadSampler, TailSampler, composeSamplers, type Sampler } from '@monit/sampling';
 
@@ -46,6 +49,16 @@ export interface CollectorOptions {
   sampler?: Sampler;
   /** 会话回放录制（rrweb 风格，默认开 30s 环；false 关闭） */
   replay?: false | { windowMs?: number; maskInputs?: boolean };
+  /** 运行时热修（轨道 A）：从 coordinator 拉取 Ed25519 签名 patch，按指纹应用行为保留补丁，可回滚。
+   *  安全：默认【拒绝】未签名 patch（applyPatch 用 new Function 执行下发代码）。配 publicKey 自动 Ed25519 公钥
+   *  验签（从 coordinator /heal/public-key 获取），或传 verify 自定义；allowUnsigned:true 仅本地调试放行未签名。*/
+  hotfix?: {
+    registryUrl: string;
+    publicKey?: string;
+    verify?: (p: RuntimePatch) => boolean | Promise<boolean>;
+    allowUnsigned?: boolean;
+    pollIntervalMs?: number;
+  };
 }
 
 export interface CollectorHandle {
@@ -108,6 +121,11 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
 
   // 4. 构造 MonitorEvent 的辅助
   const traceId = traceContext.traceId ?? '';
+  /** 当前页面上下文（供根因分析结合"在哪个页面发生"）*/
+  const pageCtx = (): { url: string; path: string; title?: string } | undefined => {
+    if (typeof location === 'undefined') return undefined;
+    return { url: location.href, path: location.pathname, title: typeof document !== 'undefined' ? document.title : undefined };
+  };
   const makeEvent = (
     type: MonitorEvent['type'],
     subType: MonitorEventSubType,
@@ -115,7 +133,10 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     fingerprint?: ErrorFingerprint,
     extraTags?: Record<string, string>,
   ): MonitorEvent => {
-    const sampled = Math.random() < sampleRate;
+    // sampled 的唯一真值来源 = reporter 的确定性采样器（HeadSampler 按 traceId 哈希 + TailSampler 兜底）。
+    // 这里乐观置 true；reporter.enqueue 在 shouldKeep=false 时改写为 false。
+    // 绝不能用 Math.random() 另掷一次——那会让 sampled/sampleRate 与实际保留决策自相矛盾。
+    const sampled = true;
     // PII 脱敏（默认开启；opts.pii=false 关闭，opts.pii={...} 自定义规则）
     const piiOpts = opts.pii === false ? null : (opts.pii ?? {});
     const safePayload = piiOpts ? redactPayload(payload, piiOpts) : payload;
@@ -143,12 +164,32 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
       reporter.enqueue(makeEvent('vital', metric.name.toLowerCase() as MonitorEventSubType, metric));
     },
     onInp: (attribution: InpAttribution) => {
-      reporter.enqueue(makeEvent('vital', 'inp', attribution, undefined, { rating: attribution.rating }));
+      // 结合当前页面 + 用户行为：INP 附带页面上下文 + 最近面包屑，供后端生成"用户故事"式具体根因
+      reporter.enqueue(makeEvent('vital', 'inp', {
+        ...attribution,
+        page: pageCtx(),
+        breadcrumbs: breadcrumbs.recent().slice(-6),
+      }, undefined, { rating: attribution.rating }));
     },
   });
 
+  // 白屏因果归因上下文：近期错误 + 失败资源（白屏检测按时序关联）
+  const recentErrorsList: Array<{ id?: string; message: string; source?: string; type?: string; timestamp: number }> = [];
+  const failedResourcesList: Array<{ url: string; tagName: string; timestamp: number }> = [];
+  // 轨道 A 热修：已采集的错误指纹（HotfixClient 仅应用匹配指纹的 patch）
+  const seenFingerprints = new Set<string>();
+
   const uninstallErrors = installErrors({
     onError: (signal: ErrorSignal, fingerprint: ErrorFingerprint) => {
+      // 喂白屏因果上下文 + 热修指纹
+      seenFingerprints.add(fingerprint.primary);
+      recentErrorsList.push({ id: signal.id, message: signal.message, source: signal.sourceURL, type: signal.type, timestamp: signal.timestamp });
+      if (recentErrorsList.length > 20) recentErrorsList.shift();
+      if (signal.type === 'resource' && signal.sourceURL) {
+        const tagMatch = signal.message.match(/Failed to load (\w+):/);
+        failedResourcesList.push({ url: signal.sourceURL, tagName: tagMatch?.[1] ?? 'unknown', timestamp: signal.timestamp });
+        if (failedResourcesList.length > 20) failedResourcesList.shift();
+      }
       // 错误事件附带最近面包屑 + 会话回放（还原用户操作路径）
       const event = makeEvent('error', signal.type as MonitorEventSubType, {
         ...signal,
@@ -169,9 +210,38 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
     },
   );
 
+  // 白屏检测（加载后采样 + 因果归因，detected 才上报）
+  const uninstallWhiteScreen = installWhiteScreen(
+    { onDetect: (d) => reporter.enqueue(makeEvent('white-screen', 'white-screen', d)) },
+    { context: { recentErrors: () => recentErrorsList, failedResources: () => failedResourcesList } },
+  );
+
+  // 行为沮丧信号（rage/dead click + erratic mouse）
+  const uninstallBehavior = installBehavior({
+    onFrustration: (s) => reporter.enqueue(makeEvent('behavior', 'frustration', s)),
+  });
+
+  // 轨道 A 运行时热修（patch-registry-over-SDK）：拉取签名 patch 按指纹应用，可回滚
+  const hotfixClient = opts.hotfix
+    ? new HotfixClient({
+        registryUrl: opts.hotfix.registryUrl,
+        publicKey: opts.hotfix.publicKey,
+        verify: opts.hotfix.verify,
+        allowUnsigned: opts.hotfix.allowUnsigned,
+        pollIntervalMs: opts.hotfix.pollIntervalMs,
+        fingerprints: () => [...seenFingerprints],
+      })
+    : null;
+  hotfixClient?.start();
+
   return {
     report(event) {
-      reporter.enqueue(event);
+      // 手动上报也经 PII 脱敏（堵 report() 绕过 makeEvent 的脱敏）
+      const piiOpts = opts.pii === false ? null : (opts.pii ?? {});
+      const finalEvent = piiOpts && !event.piiSafe
+        ? { ...event, payload: redactPayload(event.payload, piiOpts), piiSafe: true }
+        : event;
+      reporter.enqueue(finalEvent);
     },
     reportReactError(error, componentStack) {
       reportReactError(error, componentStack, {
@@ -187,6 +257,9 @@ export function initCollector(opts: CollectorOptions): CollectorHandle {
       uninstallVitals();
       uninstallErrors();
       requestHandle.uninstall();
+      uninstallWhiteScreen();
+      uninstallBehavior();
+      hotfixClient?.stop();
       breadcrumbs.uninstall();
       replay?.uninstall();
       reporter.stop();

@@ -46,8 +46,10 @@ export function normalizeStackFrame(frame: string): string {
     .trim()
     // 去 query string
     .replace(/\?[^:\s]*/g, '')
-    // 去 line:col（V8/Chrome: at fn (url:line:col)）
-    .replace(/:\d+:\d+\)?$/g, ')')
+    // 去 line:col：V8/Chrome 形如 at fn (url:line:col)，Safari/Firefox 形如 fn@url:line:col（无尾括号）。
+    // 必须捕获原尾括号并按原样保留——否则会给无括号帧凭空补 ')'，
+    // 导致同一崩溃点在 Chrome 与 Firefox/Safari 下落到不同 primary 指纹。
+    .replace(/:\d+:\d+(\)?)$/g, '$1')
     .replace(/:\d+:\d+/g, '')
     // content-hash 泛化（8+ hex 段）
     .replace(/-[0-9a-f]{8,}\.(js|mjs|cjs|ts|jsx|tsx)/gi, '-[hash].$1')

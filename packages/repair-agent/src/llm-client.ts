@@ -14,6 +14,8 @@ export interface LLMConfig {
   temperature?: number;
   /** 最大重试 */
   maxRetries?: number;
+  /** 单次请求超时 ms（默认 30000）。超时视为可重试错误。*/
+  timeoutMs?: number;
   /** 协议格式：openai（/chat/completions）| anthropic（/v1/messages）。默认 openai。 */
   provider?: 'openai' | 'anthropic';
 }
@@ -39,6 +41,21 @@ export function normalizeBaseUrl(baseUrl: string): string {
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
+/** 不可重试的 HTTP 错误（4xx 鉴权/参数等）。命中即抛，不烧退避重试。 */
+class HttpError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
+/** fetch + 超时（AbortController）。无超时则挂起的 socket 会拖死整条 pipeline。 */
+function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
@@ -55,11 +72,12 @@ export async function chat(config: LLMConfig, messages: ChatMessage[]): Promise<
 async function chatOpenAi(config: LLMConfig, messages: ChatMessage[]): Promise<ChatResult> {
   const url = `${normalizeBaseUrl(config.baseUrl)}/chat/completions`;
   const maxRetries = config.maxRetries ?? 3;
+  const timeoutMs = config.timeoutMs ?? 30_000;
 
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -71,21 +89,23 @@ async function chatOpenAi(config: LLMConfig, messages: ChatMessage[]): Promise<C
           temperature: config.temperature ?? 0.2,
           stream: false,
         }),
-      });
+      }, timeoutMs);
 
       if (!res.ok) {
         if (RETRYABLE_STATUS.has(res.status) && attempt < maxRetries) {
-          const backoff = Math.min(8000, 500 * Math.pow(2, attempt));
-          await sleep(backoff);
+          await sleep(Math.min(8000, 500 * Math.pow(2, attempt)));
           continue;
         }
-        throw new Error(`LLM ${res.status}: ${await res.text().catch(() => res.statusText)}`);
+        // 不可重试（4xx 鉴权/参数错误等）：立即抛 HttpError，catch 不再重试，避免白白烧退避
+        throw new HttpError(res.status, `LLM ${res.status}: ${await res.text().catch(() => res.statusText)}`);
       }
 
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content ?? '';
       return { content, usage: data?.usage };
     } catch (err) {
+      // 不可重试 HTTP 错误（401/403/400…）直接抛；仅对网络错误/超时这类瞬态错误重试
+      if (err instanceof HttpError) throw err;
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < maxRetries) {
         await sleep(500 * Math.pow(2, attempt));
@@ -104,13 +124,14 @@ async function chatOpenAi(config: LLMConfig, messages: ChatMessage[]): Promise<C
 async function chatAnthropic(config: LLMConfig, messages: ChatMessage[]): Promise<ChatResult> {
   const url = `${normalizeBaseUrl(config.baseUrl)}/v1/messages`;
   const maxRetries = config.maxRetries ?? 3;
+  const timeoutMs = config.timeoutMs ?? 30_000;
   const system = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const convo = messages.filter(m => m.role !== 'system').map(m => ({ role: m.role, content: m.content }));
 
   let lastError: Error | null = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      const res = await fetch(url, {
+      const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -124,14 +145,14 @@ async function chatAnthropic(config: LLMConfig, messages: ChatMessage[]): Promis
           ...(system ? { system } : {}),
           messages: convo.length > 0 ? convo : [{ role: 'user', content: '' }],
         }),
-      });
+      }, timeoutMs);
 
       if (!res.ok) {
         if (RETRYABLE_STATUS.has(res.status) && attempt < maxRetries) {
           await sleep(Math.min(8000, 500 * Math.pow(2, attempt)));
           continue;
         }
-        throw new Error(`LLM ${res.status}: ${await res.text().catch(() => res.statusText)}`);
+        throw new HttpError(res.status, `LLM ${res.status}: ${await res.text().catch(() => res.statusText)}`);
       }
 
       const data = await res.json();
@@ -140,6 +161,7 @@ async function chatAnthropic(config: LLMConfig, messages: ChatMessage[]): Promis
         : (data?.content ?? '');
       return { content, usage: data?.usage ? { promptTokens: data.usage.input_tokens, completionTokens: data.usage.output_tokens } : undefined };
     } catch (err) {
+      if (err instanceof HttpError) throw err;
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < maxRetries) {
         await sleep(500 * Math.pow(2, attempt));

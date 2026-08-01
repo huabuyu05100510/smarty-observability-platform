@@ -38,12 +38,7 @@ export function percentile(values: number[], p: number): number {
   return sorted[idx];
 }
 
-let rowCounter = 0;
-function rowId(): string {
-  return `flame-${rowCounter++}`;
-}
-
-function loafScriptToRow(script: LoafScriptFrame, startMs: number, depth: number, p99: number): PerfFlameRow {
+function loafScriptToRow(script: LoafScriptFrame, startMs: number, depth: number, p99: number, rowId: () => string): PerfFlameRow {
   const name = script.sourceFunctionName ?? script.invoker ?? script.name ?? '<anon script>';
   return {
     id: rowId(),
@@ -70,7 +65,8 @@ export function buildPerfFlamegraph(
   report: DiagnosticReport,
   _records?: AttributionRecord[],
 ): PerfFlamegraphData {
-  rowCounter = 0;
+  let counter = 0;
+  const rowId = (): string => `flame-${counter++}`;
   const inp = report.inp;
   if (!inp) {
     return { roots: [], totalMs: 0, p99: 0 };
@@ -97,7 +93,7 @@ export function buildPerfFlamegraph(
       startMs: inp.inputDelay,
       durationMs: inp.processingDuration,
       depth: 1,
-      children: loafScripts.map(s => loafScriptToRow(s, inp.inputDelay, 2, p99)),
+      children: loafScripts.map(s => loafScriptToRow(s, inp.inputDelay, 2, p99, rowId)),
       isHot: inp.processingDuration >= p99 * 0.5 && p99 > 0,
     },
     {

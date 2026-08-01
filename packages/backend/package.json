@@ -20,6 +20,8 @@
     "@monit/contracts": "workspace:*",
     "@monit/diagnose": "workspace:*",
     "@monit/repair-agent": "workspace:*",
+    "@monit/trace": "workspace:*",
+    "@monit/server-kit": "workspace:*",
     "source-map-js": "^1.2.1"
   }
 }

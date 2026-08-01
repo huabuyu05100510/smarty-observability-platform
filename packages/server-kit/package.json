@@ -1,0 +1,25 @@
+{
+  "name": "@monit/server-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Node 端 HTTP 守卫与签名工具：鉴权/Origin/有界 body/限流/审计中间件、路由优先级匹配、Ed25519 私钥签名、热修代码 acorn AST 严格白名单、行 diff。供 @monit/backend 与 @monit/coordinator 复用。",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@monit/crypto-kit": "workspace:*",
+    "acorn": "^8.14.0"
+  }
+}

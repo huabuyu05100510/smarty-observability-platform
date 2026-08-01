@@ -32,6 +32,21 @@ function ratingForLcp(value: number): VitalMetric['rating'] {
 function ratingForCls(value: number): VitalMetric['rating'] {
   return value <= 0.1 ? 'good' : value <= 0.25 ? 'needs-improvement' : 'poor';
 }
+function ratingForTtfb(value: number): VitalMetric['rating'] {
+  // CWV TTFB 阈值与 LCP 不同：good ≤800ms / NI ≤1800ms / poor >1800ms。
+  // 之前误用 ratingForLcp（≤2500 good），会把 2000ms 的 TTFB 误判成 good。
+  return value <= 800 ? 'good' : value <= 1800 ? 'needs-improvement' : 'poor';
+}
+
+/** LCP 元素描述（选择器，便于归因定位）*/
+function describeElement(el: Element): string {
+  const tag = el.tagName?.toLowerCase() ?? 'unknown';
+  const id = el.id ? `#${el.id}` : '';
+  const cls = el.className && typeof el.className === 'string'
+    ? `.${el.className.split(/\s+/).slice(0, 2).join('.')}`
+    : '';
+  return `${tag}${id}${cls}`;
+}
 
 /**
  * 安装 Web Vitals 采集。返回 uninstall。
@@ -47,7 +62,29 @@ export function installVitals(cb: VitalsCallbacks): () => void {
         if (entry.entryType === 'paint' && entry.name === 'first-contentful-paint') {
           cb.onVital({ name: 'FCP', value: entry.startTime, rating: ratingForLcp(entry.startTime) });
         } else if (entry.entryType === 'largest-contentful-paint') {
-          cb.onVital({ name: 'LCP', value: entry.startTime, rating: ratingForLcp(entry.startTime) });
+          // LCP 归因：element + url + TTFB/资源加载/渲染拆解（不只给值，给"为什么慢"）
+          const lcp = entry as PerformanceEntry & {
+            element?: Element;
+            url?: string;
+            loadTime?: number;
+            renderTime?: number;
+            responseStart?: number;
+          };
+          const value = entry.startTime;
+          const attribution: Record<string, unknown> = {};
+          if (lcp.element) {
+            attribution.element = describeElement(lcp.element);
+            attribution.elementTag = lcp.element.tagName?.toLowerCase();
+          }
+          if (lcp.url) attribution.url = lcp.url;
+          // LCP 拆解：TTFB 段 / 资源加载段 / 元素渲染段
+          const ttfb = (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)?.responseStart ?? 0;
+          const resourceLoad = (lcp.loadTime ?? 0) - ttfb;
+          const elementRender = value - (lcp.loadTime ?? value);
+          attribution.timeToFirstByte = Math.max(0, ttfb);
+          attribution.resourceLoadDuration = Math.max(0, resourceLoad);
+          attribution.elementRenderDelay = Math.max(0, elementRender);
+          cb.onVital({ name: 'LCP', value, rating: ratingForLcp(value), attribution });
         }
       }
     });
@@ -56,9 +93,31 @@ export function installVitals(cb: VitalsCallbacks): () => void {
     cleanups.push(() => po.disconnect());
   } catch { /* unsupported */ }
 
-  // CLS（累积 layout-shift）
+  // 共享终态：标签页隐藏/卸载时一次性上报终态指标（CLS 终值、最差 INP）。
+  // 监听 visibilitychange(hidden) + pagehide（关闭/崩溃也兜底），避免长会话或被杀页面永不报。
+  let clsValue = 0;
+  let clsReported = false;
+  let worstInp = 0;
+  let worstEntry: PerformanceEventTiming | null = null;
+  let inpReported = false;
+  const loafBuffer: LoafBufferEntry[] = [];
+  const reportOnHide = (): void => {
+    if (document.visibilityState !== 'hidden') return;
+    if (!clsReported) {
+      clsReported = true;
+      cb.onVital({ name: 'CLS', value: clsValue, rating: ratingForCls(clsValue) });
+    }
+    if (!inpReported && worstEntry) {
+      inpReported = true;
+      const attribution = buildInpAttribution(worstEntry, loafBuffer);
+      cb.onInp(attribution);
+      cb.onVital({ name: 'INP', value: attribution.value, rating: attribution.rating });
+    }
+  };
+
+  // CLS（累积 layout-shift）—— 仅累加，终值在隐藏时上报。
+  // 之前每次 layout-shift 都上报一次，会刷屏 + 抬高后端 p75（web-vitals 实为终值上报）。
   try {
-    let clsValue = 0;
     const po = new PerformanceObserver(list => {
       for (const entry of list.getEntries()) {
         const ls = entry as PerformanceEntry & { hadRecentInput?: boolean; value?: number };
@@ -66,7 +125,6 @@ export function installVitals(cb: VitalsCallbacks): () => void {
           clsValue += ls.value;
         }
       }
-      cb.onVital({ name: 'CLS', value: clsValue, rating: ratingForCls(clsValue) });
     });
     po.observe({ type: 'layout-shift', buffered: true });
     cleanups.push(() => po.disconnect());
@@ -76,12 +134,11 @@ export function installVitals(cb: VitalsCallbacks): () => void {
   try {
     const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
     if (nav) {
-      cb.onVital({ name: 'TTFB', value: nav.responseStart, rating: ratingForLcp(nav.responseStart) });
+      cb.onVital({ name: 'TTFB', value: nav.responseStart, rating: ratingForTtfb(nav.responseStart) });
     }
   } catch { /* unsupported */ }
 
   // LoAF buffer（与 INP 交叉）
-  const loafBuffer: LoafBufferEntry[] = [];
   try {
     const po = new PerformanceObserver(list => {
       for (const entry of list.getEntries()) {
@@ -95,10 +152,8 @@ export function installVitals(cb: VitalsCallbacks): () => void {
     cleanups.push(() => po.disconnect());
   } catch { /* LoAF unsupported on FF/Safari */ }
 
-  // INP（event，取最差交互，含 LoAF 归因）
+  // INP（event，取最差交互，含 LoAF 归因）—— 仅记录最差，终值在隐藏时上报
   try {
-    let worstInp = 0;
-    let worstEntry: PerformanceEventTiming | null = null;
     const po = new PerformanceObserver(list => {
       for (const entry of list.getEntries()) {
         const et = entry as unknown as PerformanceEventTiming;
@@ -110,19 +165,12 @@ export function installVitals(cb: VitalsCallbacks): () => void {
       }
     });
     po.observe({ type: 'event', buffered: true });
-
-    // 在 visibilitychange hidden 时上报最差 INP（web-vitals 范式）
-    const onHidden = () => {
-      if (document.visibilityState === 'hidden' && worstEntry) {
-        const attribution = buildInpAttribution(worstEntry, loafBuffer);
-        cb.onInp(attribution);
-        cb.onVital({ name: 'INP', value: attribution.value, rating: attribution.rating });
-      }
-    };
-    document.addEventListener('visibilitychange', onHidden);
+    document.addEventListener('visibilitychange', reportOnHide);
+    document.addEventListener('pagehide', reportOnHide);
     cleanups.push(() => {
       po.disconnect();
-      document.removeEventListener('visibilitychange', onHidden);
+      document.removeEventListener('visibilitychange', reportOnHide);
+      document.removeEventListener('pagehide', reportOnHide);
     });
   } catch { /* unsupported */ }
 

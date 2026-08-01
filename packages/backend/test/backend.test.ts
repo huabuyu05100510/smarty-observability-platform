@@ -158,10 +158,11 @@ describe('backend server', () => {
     expect(html).toContain('错误收件箱');
   });
 
-  it('handles CORS preflight', async () => {
+  it('handles CORS preflight（Origin 白名单回显，不再 *）', async () => {
     const { base } = await start();
-    const res = await fetch(`${base}/api/errors`, { method: 'OPTIONS' });
+    const res = await fetch(`${base}/api/errors`, { method: 'OPTIONS', headers: { Origin: base } });
     expect(res.status).toBe(204);
-    expect(res.headers.get('access-control-allow-origin')).toBe('*');
+    expect(res.headers.get('access-control-allow-origin')).toBe(base); // loopback origin 回显
+    expect(res.headers.get('vary')).toBe('Origin');
   });
 });

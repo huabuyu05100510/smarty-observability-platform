@@ -23,6 +23,10 @@ export function installErrors(cb: ErrorCallbacks): () => void {
 
   // JS 错误（window.onerror）
   const onError = (event: ErrorEvent) => {
+    // 资源加载错误（img/script/link 等失败）在 capture 阶段也会先到这里，其 target 是 Element。
+    // 交给 onResourceError 处理，避免【重复上报】+ 把空 message 的资源错误【误判成 js 错误】。
+    const target = event.target as Element | null;
+    if (target && (target as Element).tagName) return;
     const isCrossOrigin = event.message === 'Script error.' && !event.filename;
     const signal: ErrorSignal = {
       id: `err-${event.timeStamp}`,

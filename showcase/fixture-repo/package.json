@@ -1,0 +1,13 @@
+{
+  "name": "smarty-showcase-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "代表作留痕用 fixture：含一个真实可复现 bug，供 runRealHealPipeline 诊断->验证->repro->修复->开 PR",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0"
+  }
+}

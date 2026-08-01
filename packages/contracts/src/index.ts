@@ -125,6 +125,8 @@ export interface DiagnosticReport {
   url: string;
   route?: string;
   createdAt: number;
+  /** 关联 W3C traceId（跨层 trace join：前端 report <-> 后端 span）*/
+  traceId?: string;
   vitals: VitalMetric[];
   inp?: InpAttribution;
   errors: ErrorSignal[];
@@ -193,10 +195,8 @@ export interface AttributionRecord {
   };
   candidates: AttributionCandidate[];
   severity: Severity;
-  /** 关联 trace，可下钻后端 span */
+  /** 关联 trace，可下钻后端 span（跨层 trace join 真实填充） */
   traceId?: string;
-  /** 关联 tracesdk 溯源 DAG 节点 */
-  provenanceNode?: string;
   createdAt: number;
 }
 
@@ -341,7 +341,8 @@ export type MonitorEventType =
   | 'trace'
   | 'ai'
   | 'long-task'
-  | 'request';
+  | 'request'
+  | 'behavior';
 
 export type MonitorEventSubType =
   | 'js'
@@ -358,7 +359,9 @@ export type MonitorEventSubType =
   | 'loaf'
   | 'fetch'
   | 'xhr'
-  | 'slow';
+  | 'slow'
+  | 'frustration'
+  | 'white-screen';
 
 export interface ErrorFingerprint {
   primary: string; // 栈指纹（FNV-1a + top-3 归一化栈帧）
@@ -393,4 +396,128 @@ export interface MonitorEvent {
   // 元数据
   tags?: Record<string, string>;
   user?: { id?: string; anonymousId?: string };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 12. SpanRecord（跨层 trace join，性能支柱皇冠）
+//     collector 注 traceparent -> backend 为 API 请求产 span（同 traceId）
+//     -> diagnose 用 traceId join 同 trace 慢 backend span。
+// ═══════════════════════════════════════════════════════════════════════
+
+export type SpanKind = 'server' | 'client' | 'db' | 'internal';
+
+export interface SpanRecord {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string;
+  /** span 名，如 "GET /api/users" */
+  name: string;
+  kind: SpanKind;
+  serviceName?: string;
+  startTime: number;
+  durationMs: number;
+  status: 'ok' | 'error';
+  /** 慢判定（durationMs 超阈值）*/
+  slow?: boolean;
+  attributes?: Record<string, string | number | boolean>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 13. FrustrationSignal（行为支柱：沮丧信号）
+// ═══════════════════════════════════════════════════════════════════════
+
+export type FrustrationKind =
+  | 'rage_click'
+  | 'dead_click'
+  | 'erratic_mouse'
+  | 'repeated_error'
+  | 'frustrated_nav';
+
+export interface FrustrationSignal {
+  kind: FrustrationKind;
+  /** 触发目标选择器 */
+  target?: string;
+  /** 同目标累计次数（rage/dead click 计数）*/
+  count: number;
+  timestamp: number;
+  meta?: Record<string, unknown>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 14. WhiteScreenDetection（白屏支柱：检测 + 因果归因）
+//     替代旧 WhiteScreenSignal 的笼统 recentErrors，做按时序因果归因。
+// ═══════════════════════════════════════════════════════════════════════
+
+export type WhiteScreenType =
+  | 'blank_dom'
+  | 'crashed_render'
+  | 'critical_resource_blocked'
+  | 'route_404'
+  | 'unknown';
+
+export interface WhiteScreenDetection {
+  detected: boolean;
+  type: WhiteScreenType;
+  validRatio: number;
+  threshold: number;
+  preset: '9' | '17' | '33';
+  rootCause: 'js_error' | 'resource_404' | 'unknown';
+  /** 因果归因：按时序关联触发白屏的具体 error（非笼统 recentErrors）*/
+  causalErrorId?: string;
+  /** 或触发白屏的关键资源 URL */
+  causalResourceUrl?: string;
+  recentErrors: Array<{ message: string; source?: string; type?: string }>;
+  failedResources: Array<{ url: string; tagName: string }>;
+  timestamp: number;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 15. ReproTest（极致闭环 BP-3：AI 生成复现测试）
+//     必须先在未打补丁代码上 FAIL（redBefore，证明复现有效），
+//     打补丁后 PASS（greenAfter）。根治"窄测试"假阳性。
+// ═══════════════════════════════════════════════════════════════════════
+
+export interface ReproTest {
+  filePath: string;
+  testName: string;
+  code: string;
+  /** 未打补丁时是否失败（证明复现有效，false 则回炉重生成）*/
+  redBefore: boolean;
+  /** 打补丁后是否通过 */
+  greenAfter: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 16. GateVector（极致闭环 BP-4：确定性布尔向量门禁，替加权 score）
+//     AI 不持有门禁；交付档位 = 显式向量匹配，消灭未校准伪精度。
+// ═══════════════════════════════════════════════════════════════════════
+
+export type VerifierVerdict = 'pass' | 'refuted' | 'skipped';
+
+export interface GateVector {
+  /** 独立模型 Verifier 判定（skipped = 未配独立模型，诚实降级）*/
+  verifier: VerifierVerdict;
+  /** Verifier 置信度 ≥ 阈值（pass 但低置信 = 弱验证，不放行自动）。AI 连续置信度→确定性布尔进门禁 */
+  verifierConfident: boolean;
+  /** 复现测试在未打补丁时失败（证明测试有效）*/
+  reproRedBefore: boolean;
+  /** 复现测试打补丁后通过 */
+  reproGreenAfter: boolean;
+  /** 现有测试套件不破 */
+  suiteGreen: boolean;
+  typecheck: boolean;
+  /** 改动局部性（auto-MR 要求 ≤1 文件 / ≤50 行）*/
+  locality: { files: number; lines: number };
+  /** 数据污染检测（真实 goldPatch 集）*/
+  contamination: 'clean' | 'detected';
+  /** 热修专用：补丁是行为保留型（非 masking 吞错）*/
+  behaviorPreserving: boolean;
+}
+
+export type HealDelivery = 'auto-mr' | 'hotfix' | 'human';
+
+export interface HealDecision {
+  delivery: HealDelivery;
+  gate: GateVector;
+  reasons: string[];
 }

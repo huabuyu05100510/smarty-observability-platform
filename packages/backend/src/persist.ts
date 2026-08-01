@@ -7,6 +7,7 @@
  */
 
 import fs from 'node:fs';
+import { dirname } from 'node:path';
 import type { MonitorEvent } from '@monit/contracts';
 
 export interface PersisterOptions {
@@ -23,19 +24,19 @@ export class JsonlPersister {
     this.path = opts.dbPath;
     this.inMemory = opts.dbPath === ':memory:';
     if (!this.inMemory) {
-      // 确保目录存在、文件可追加
-      const dir = this.path.includes('/') ? this.path.slice(0, this.path.lastIndexOf('/')) : '.';
-      if (dir) fs.mkdirSync(dir, { recursive: true });
+      // 确保目录存在、文件可追加（dirname 跨平台，替代手写 lastIndexOf('/')）
+      const dir = dirname(this.path) || '.';
+      fs.mkdirSync(dir, { recursive: true });
       if (!fs.existsSync(this.path)) fs.writeFileSync(this.path, '');
     }
   }
 
-  /** 批量持久化（追加） */
+  /** 批量持久化（追加）。逐事件单行 append —— 缩小崩溃窗口到单行（多行拼接一次 append
+   *  崩溃会截断该批中段，坏行之后的好行也丢；逐行 append 仅丢正在写的那行）。 */
   saveEvents(events: MonitorEvent[]): void {
     if (events.length === 0) return;
     if (this.inMemory) { this.mem.push(...events); return; }
-    const lines = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
-    fs.appendFileSync(this.path, lines);
+    for (const e of events) fs.appendFileSync(this.path, JSON.stringify(e) + '\n');
   }
 
   /** 载入全部事件（hydrate 用；按 id 去重后写覆盖、按 timestamp 升序） */
@@ -67,7 +68,16 @@ export class JsonlPersister {
   private readLines(): MonitorEvent[] {
     if (!fs.existsSync(this.path)) return [];
     const content = fs.readFileSync(this.path, 'utf-8');
-    return content.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l) as MonitorEvent);
+    // 逐行解析：崩溃时 appendFileSync 可能写半行（截断 JSON）。
+    // 之前一行坏掉就让整个 map 抛错、整段 hydrate 失败 -> "重启不丢数据"不成立。
+    // 现逐行 try/catch 跳过损坏行，保留可解析的历史。
+    const out: MonitorEvent[] = [];
+    for (const l of content.split('\n')) {
+      const t = l.trim();
+      if (!t) continue;
+      try { out.push(JSON.parse(t) as MonitorEvent); } catch { /* 跳过损坏行 */ }
+    }
+    return out;
   }
 }
 

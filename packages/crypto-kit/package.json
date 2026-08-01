@@ -1,0 +1,21 @@
+{
+  "name": "@monit/crypto-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "跨端（浏览器 + Node）纯密码学工具：Ed25519 签名 payload 确定性序列化、WebCrypto 公钥验签、热修代码轻量校验。无 Node 内置依赖，保证签名两端字节级一致。",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  }
+}

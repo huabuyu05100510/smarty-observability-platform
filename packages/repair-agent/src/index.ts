@@ -16,7 +16,9 @@ export { chat, chatJson, preflight, extractJson, normalizeBaseUrl, type LLMConfi
 export { verifyAdversarially, verifyAdversariallyPanel, type DiagnosisInput } from './verifier';
 export { runRegression, type RegressionOptions } from './regression-runner';
 export { assessConfidence, type LocalitySignals, type ConfidenceGateInput, type ConfidenceGateOutput } from './confidence';
+export { assessGate, localityOk, AUTO_MR_MAX_FILES, AUTO_MR_MAX_LINES } from './gate';
 export { runHarness, type HarnessDeps, type HarnessResult, type Diagnosis } from './harness';
+export { runHealPipeline, VERIFIER_MIN_CONFIDENCE, type HealPipelineDeps, type HealPipelineResult, type ReproTestCode, type ReproRunResult, type ReproStatus, type ApplyResult, type DeliveryResult } from './pipeline';
 export {
   buildInjectionExpression,
   buildSmartFetchExpression,

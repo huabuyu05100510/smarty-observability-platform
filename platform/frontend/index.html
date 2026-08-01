@@ -5,41 +5,72 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>smarty-observability-platform · Dashboard</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: light; }
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: #0b0e14; color: #e6edf3; }
-  .app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
-  .sidebar { background: #11151c; border-right: 1px solid #1f2630; padding: 16px 0; }
-  .sidebar h1 { font-size: 14px; padding: 0 16px 16px; margin: 0; color: #58a6ff; border-bottom: 1px solid #1f2630; }
-  .nav-item { padding: 10px 16px; cursor: pointer; font-size: 13px; color: #8b949e; }
-  .nav-item:hover, .nav-item.active { background: #161b22; color: #e6edf3; border-left: 2px solid #58a6ff; }
-  .main { padding: 20px 24px; overflow: auto; }
-  .card { background: #11151c; border: 1px solid #1f2630; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  .card h2 { margin: 0 0 12px; font-size: 14px; color: #c9d1d9; display: flex; justify-content: space-between; align-items: center; }
-  .grid3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; }
+  body {
+    font-family: 'Camera Plain Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    margin: 0; background: #f7f4ed; color: #1c1c1c;
+    font-size: 16px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  .app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+  .sidebar { background: #f7f4ed; border-right: 1px solid #eceae4; padding: 24px 0; }
+  .sidebar h1 {
+    font-size: 16px; font-weight: 600; letter-spacing: -0.3px;
+    padding: 0 20px 20px; margin: 0; color: #1c1c1c; border-bottom: 1px solid #eceae4;
+  }
+  .nav-item {
+    padding: 10px 20px; cursor: pointer; font-size: 14px; color: rgba(28,28,28,0.6);
+    transition: all 0.15s ease; border-left: 2px solid transparent;
+  }
+  .nav-item:hover { background: rgba(28,28,28,0.04); color: #1c1c1c; }
+  .nav-item.active { background: rgba(28,28,28,0.04); color: #1c1c1c; border-left-color: #1c1c1c; font-weight: 600; }
+  .main { padding: 32px 40px; overflow: auto; }
+  .card { background: #f7f4ed; border: 1px solid #eceae4; border-radius: 12px; padding: 24px; margin-bottom: 16px; }
+  .card h2 {
+    margin: 0 0 16px; font-size: 20px; font-weight: 600; letter-spacing: -0.2px; color: #1c1c1c;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  .stat { font-size: 28px; font-weight: 700; }
-  .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
-  .row { padding: 10px 0; border-bottom: 1px solid #1f2630; cursor: pointer; }
-  .row:hover { background: #161b22; }
-  .count { display: inline-block; min-width: 32px; padding: 2px 8px; border-radius: 4px; background: #3d1418; color: #ff7b72; font-size: 12px; font-weight: 600; margin-right: 8px; text-align: center; }
-  .msg { color: #d1d5db; font-size: 13px; }
-  .meta { color: #6b7280; font-size: 11px; margin-top: 2px; }
-  .good { color: #3fb950; } .ni { color: #d29922; } .poor { color: #f85149; }
-  pre { background: #0b0e14; padding: 12px; border-radius: 6px; overflow: auto; font-size: 12px; border: 1px solid #1f2630; max-height: 320px; }
-  .btn { background: #1f6feb; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-  .btn:hover { background: #388bfd; }
-  .btn.sec { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
-  .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; background: #21262d; color: #8b949e; margin-left: 6px; }
-  .ai { background: #0d1117; border: 1px solid #1f6feb44; }
-  .ai h2 { color: #58a6ff; }
-  .empty { color: #6b7280; text-align: center; padding: 24px; }
+  .stat { font-size: 32px; font-weight: 600; letter-spacing: -0.5px; color: #1c1c1c; }
+  .stat-label { font-size: 13px; color: #5f5f5d; margin-top: 4px; }
+  .row { padding: 12px 0; border-bottom: 1px solid #eceae4; cursor: pointer; transition: background 0.1s; }
+  .row:hover { background: rgba(28,28,28,0.03); }
+  .count {
+    display: inline-block; min-width: 32px; padding: 2px 8px; border-radius: 6px;
+    background: rgba(28,28,28,0.06); color: #1c1c1c; font-size: 12px; font-weight: 600; margin-right: 8px; text-align: center;
+  }
+  .msg { color: #1c1c1c; font-size: 14px; }
+  .meta { color: #5f5f5d; font-size: 12px; margin-top: 2px; }
+  .good { color: #16a34a; } .ni { color: #ca8a04; } .poor { color: #dc2626; }
+  pre {
+    background: rgba(28,28,28,0.03); padding: 16px; border-radius: 8px; overflow: auto; font-size: 13px;
+    border: 1px solid #eceae4; max-height: 360px; font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace; line-height: 1.5;
+  }
+  .btn {
+    background: #1c1c1c; color: #fcfbf8; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;
+    font-size: 14px; font-family: inherit; transition: opacity 0.1s;
+    box-shadow: rgba(255,255,255,0.2) 0px 0.5px 0px 0px inset, rgba(0,0,0,0.2) 0px 0px 0px 0.5px inset, rgba(0,0,0,0.05) 0px 1px 2px 0px;
+  }
+  .btn:hover { opacity: 0.85; } .btn:active { opacity: 0.8; }
+  .btn.sec { background: #f7f4ed; color: #1c1c1c; border: 1px solid rgba(28,28,28,0.4); box-shadow: none; }
+  .btn.sec:hover { background: rgba(28,28,28,0.04); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 500;
+    background: rgba(28,28,28,0.06); color: rgba(28,28,28,0.7); margin-left: 6px;
+  }
+  .badge.good { background: rgba(22,163,74,0.1); color: #16a34a; }
+  .badge.ni { background: rgba(202,138,4,0.1); color: #ca8a04; }
+  .badge.poor { background: rgba(220,38,38,0.1); color: #dc2626; }
+  .ai { background: #f7f4ed; border: 1px solid #eceae4; }
+  .ai h2 { color: #1c1c1c; }
+  .empty { color: #5f5f5d; text-align: center; padding: 32px; font-size: 14px; }
   table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 8px; border-bottom: 1px solid #1f2630; font-size: 12px; color: #8b949e; }
-  td { padding: 8px; font-size: 13px; border-bottom: 1px solid #161b22; }
-  .bar-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
-  .bar-bg { flex: 1; background: #161b22; border-radius: 3px; height: 16px; overflow: hidden; }
-  .bar-fg { height: 100%; background: #58a6ff; }
+  th { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eceae4; font-size: 12px; color: #5f5f5d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 10px 8px; font-size: 14px; border-bottom: 1px solid rgba(28,28,28,0.06); color: #1c1c1c; }
+  .bar-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; }
+  .bar-bg { flex: 1; background: rgba(28,28,28,0.06); border-radius: 4px; height: 20px; overflow: hidden; }
+  .bar-fg { height: 100%; background: #1c1c1c; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -147,7 +178,7 @@ function ErrorDetail({fp,onBack}){
     ),
     React.createElement('div',{className:'grid2'},
       React.createElement('div',{className:'card'},React.createElement('h2',null,'压缩栈 ',React.createElement('button',{className:'btn sec',onClick:resolve},'sourcemap 还原')),React.createElement('pre',null,s?.stack||'(no stack)'),
-        resolved&&resolved.length>0&&React.createElement('div',{style:{marginTop:8}},React.createElement('h2',null,'还原后源码位置'),resolved.map((f,i)=>React.createElement('div',{key:i,style:{fontFamily:'monospace',fontSize:12,padding:'4px 0'},className:f.resolved?'good':'poor'},(f.resolved?'✓ ':'✗ ')+(f.source||'?')+':'+(f.line||'?')+':'+(f.column||'?'))))),
+        resolved&&resolved.length>0&&React.createElement('div',{style:{marginTop:8}},React.createElement('h2',null,'还原后源码位置 + 源代码'),resolved.map((f,i)=>React.createElement('div',{key:i,style:{fontFamily:'monospace',fontSize:12,padding:'4px 0'},className:f.resolved?'good':'poor'},React.createElement('div',null,(f.resolved?'✓ ':'✗ ')+(f.source||'?')+':'+(f.line||'?')+':'+(f.column||'?')),f.sourceSnippet&&React.createElement('pre',{style:{background:'#f6f8fa',padding:8,marginTop:4,whiteSpace:'pre-wrap',borderLeft:'3px solid #0969da'},className:'good'},f.sourceSnippet)))),),
       React.createElement('div',null,
         React.createElement('div',{className:'card'},React.createElement('h2',null,'面包屑 ('+((s?.breadcrumbs||[]).length)+')'),(s?.breadcrumbs||[]).length===0?React.createElement('div',{className:'empty'},'无'):s.breadcrumbs.map((b,i)=>React.createElement('div',{key:i,style:{fontSize:11,color:'#8b949e',padding:'2px 0'}},b.type+': '+b.message))),
         React.createElement('div',{className:'card ai'},React.createElement('h2',null,'AI 诊断（MiniMax，自动触发）',
@@ -161,10 +192,49 @@ function ErrorDetail({fp,onBack}){
   );
 }
 
-function Vitals(){const [v,setV]=us([]);ue(()=>{get('/api/vitals').then(d=>setV(d.vitals||[]));const t=setInterval(()=>get('/api/vitals').then(d=>setV(d.vitals||[])),5000);return()=>clearInterval(t);},[]);
-  return React.createElement('div',{className:'card'},React.createElement('h2',null,'Web Vitals（p75 / p99）'),v.length===0?React.createElement('div',{className:'empty'},'无'):
-    React.createElement('table',null,React.createElement('thead',null,React.createElement('tr',null,['指标','count','p75','p99','评级'].map(h=>React.createElement('th',{key:h},h)))),
-      React.createElement('tbody',null,v.map(x=>React.createElement('tr',{key:x.name},React.createElement('td',null,React.createElement('b',null,x.name)),React.createElement('td',null,x.count),React.createElement('td',null,(x.p75??0).toFixed(0)),React.createElement('td',null,(x.p99??0).toFixed(0)),React.createElement('td',{className:rc(x.worstRating)},x.worstRating))))));
+function Vitals(){const [v,setV]=us([]);const [open,setOpen]=us(null);const [loaf,setLoaf]=us(null);
+  ue(()=>{get('/api/vitals').then(d=>setV(d.vitals||[]));const t=setInterval(()=>get('/api/vitals').then(d=>setV(d.vitals||[])),5000);return()=>clearInterval(t);},[]);
+  // INP LoAF 根因下钻：sourceURL + sourceCharPosition → sourcemap 还原到源码行
+  const resolveLoaf=async(x)=>{setLoaf({loading:true});const s=x.sample||{};const sc=Array.isArray(s.longAnimationFrameEntries)&&s.longAnimationFrameEntries[0]&&s.longAnimationFrameEntries[0].scripts&&s.longAnimationFrameEntries[0].scripts[0];if(!sc||!sc.sourceURL||sc.sourceCharPosition==null){setLoaf({none:true,msg:'该 INP 样本 LoAF 脚本无 sourceURL/charPosition（需真实慢交互触发有 sourceURL 的脚本）'});return;}try{const r=await fetch(API+'/api/sourcemaps/resolve-loaf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({appId:'default',version:'demo-1.0.0',url:sc.sourceURL,charPosition:sc.sourceCharPosition})});const d=await r.json();setLoaf(d.frame||{error:'no frame'});}catch(e){setLoaf({error:String(e)});}};
+  const attrLines=(x)=>{const s=x.sample||{};const a=(s.attribution&&typeof s.attribution==='object')?s.attribution:{};const L=[];
+    if(s.interactionTarget)L.push(['交互目标',s.interactionTarget]);
+    if(s.inputDelay!=null)L.push(['inputDelay',s.inputDelay+'ms']);
+    if(s.processingDuration!=null)L.push(['processing',s.processingDuration+'ms']);
+    if(s.presentationDelay!=null)L.push(['presentation',s.presentationDelay+'ms']);
+    if(s.loadState)L.push(['loadState',s.loadState]);
+    if(a.url)L.push(['LCP 资源',a.url]);
+    if(a.element)L.push(['LCP 元素',a.element]);
+    if(a.target)L.push(['CLS 目标',a.target]);
+    if(Array.isArray(s.longAnimationFrameEntries)&&s.longAnimationFrameEntries[0]){const sc=s.longAnimationFrameEntries[0].scripts&&s.longAnimationFrameEntries[0].scripts[0];if(sc)L.push(['LoAF 脚本',(sc.sourceFunctionName||'<anon>')+' @ '+(sc.sourceURL||'?')+' (charPos='+sc.sourceCharPosition+')']);}
+    return L;
+  };
+  return React.createElement('div',{className:'card'},React.createElement('h2',null,'Web Vitals（p75/p99 + 归因下钻 + LoAF 根因还原源码）'),v.length===0?React.createElement('div',{className:'empty'},'无数据，先 pnpm seed'):
+    React.createElement('div',null,v.map(x=>React.createElement('div',{key:x.name,style:{marginBottom:6}},
+      React.createElement('div',{onClick:()=>{const n=open===x.name?null:x.name;setOpen(n);setLoaf(null);if(n&&x.name==='INP')resolveLoaf(x);},style:{cursor:'pointer',padding:'8px 4px',borderBottom:'1px solid #eee',display:'flex',gap:12,alignItems:'center'}},
+        React.createElement('b',{style:{minWidth:60}},x.name),
+        React.createElement('span',null,'p75 ',React.createElement('b',null,(x.p75??0).toFixed(0))),
+        React.createElement('span',null,'p99 ',React.createElement('b',null,(x.p99??0).toFixed(0))),
+        React.createElement('span',{className:'badge '+rc(x.worstRating)},x.worstRating),
+        React.createElement('span',{className:'meta'},'n='+x.count),
+        React.createElement('span',{className:'meta'},open===x.name?'▾ 收起':'▸ 最差样本归因')),
+      open===x.name&&React.createElement('div',{style:{padding:'8px 0 8px 20px',fontFamily:'monospace',fontSize:12}},
+        attrLines(x).length?attrLines(x).map(([k,val],i)=>React.createElement('div',{key:i,style:{padding:'2px 0'}},React.createElement('span',{className:'meta'},k+': '),React.createElement('span',null,String(val).slice(0,160)))):React.createElement('div',{className:'empty'},'该指标无归因数据（采集端未上报 attribution）'),
+        x.analysis&&React.createElement('div',{style:{marginTop:10,background:'#f6f8fa',padding:8,borderLeft:'3px solid #0969da'}},
+          React.createElement('div',{style:{marginBottom:4}},React.createElement('b',null,'📊 根因分析（结合页面 + 用户行为）')),
+          x.analysis.userStory&&React.createElement('div',{style:{marginBottom:6,padding:6,background:'#fff7e6',borderLeft:'3px solid #fa8c16'}},'🎬 ',x.analysis.userStory),
+          x.analysis.userActions&&x.analysis.userActions.length>0&&React.createElement('div',{style:{marginBottom:6,fontSize:11}},React.createElement('span',{className:'meta'},'行为序列: '),x.analysis.userActions.join(' → ')),
+          x.analysis.dominantCause&&React.createElement('div',{style:{marginBottom:4}},React.createElement('span',{className:'poor'},'主导原因: '),x.analysis.dominantCause),
+          React.createElement('div',{style:{marginBottom:4}},React.createElement('span',{className:'meta'},'行业基线 good≤'+x.analysis.baseline.good+' / poor>'+x.analysis.baseline.poor+' → '),React.createElement('b',{className:x.analysis.baseline.verdict.startsWith('good')?'good':'poor'},x.analysis.baseline.verdict)),
+          x.analysis.suggestions.map((sg,i)=>React.createElement('div',{key:i,style:{padding:'2px 0'}},'💡 '+sg))
+        ),
+        x.name==='INP'&&React.createElement('div',{style:{marginTop:10}},
+          React.createElement('div',{style:{marginBottom:4}},React.createElement('b',null,'LoAF 根因 → 源码还原')),
+          loaf&&loaf.resolved&&React.createElement('div',null,React.createElement('div',{className:'good',style:{marginBottom:4}},'✓ '+loaf.source+':'+loaf.line+':'+loaf.column),React.createElement('pre',{style:{background:'#f6f8fa',padding:8,whiteSpace:'pre-wrap',borderLeft:'3px solid #0969da',marginTop:0}},loaf.sourceSnippet)),
+          loaf&&loaf.none&&React.createElement('div',{className:'empty'},loaf.msg),
+          loaf&&loaf.error&&React.createElement('div',{className:'poor'},'还原失败: '+loaf.error)
+        )
+      )
+    ))));
 }
 function Sessions(){const [s,setS]=us([]);ue(()=>{get('/api/sessions').then(d=>setS(d.sessions||[]));const t=setInterval(()=>get('/api/sessions').then(d=>setS(d.sessions||[])),5000);return()=>clearInterval(t);},[]);
   return React.createElement('div',{className:'card'},React.createElement('h2',null,'Sessions'),s.length===0?React.createElement('div',{className:'empty'},'无'):React.createElement('table',null,React.createElement('thead',null,React.createElement('tr',null,['session','release','事件','错误','最后'].map(h=>React.createElement('th',{key:h},h)))),React.createElement('tbody',null,s.slice(0,50).map(x=>React.createElement('tr',{key:x.sessionId},React.createElement('td',null,x.sessionId.slice(0,20)),React.createElement('td',null,React.createElement('span',{className:'badge'},x.release)),React.createElement('td',null,x.eventCount),React.createElement('td',{className:'poor'},x.errorCount),React.createElement('td',{className:'meta'},fmt(x.lastSeen)))))));
@@ -172,12 +242,174 @@ function Sessions(){const [s,setS]=us([]);ue(()=>{get('/api/sessions').then(d=>s
 function Releases(){const [r,setR]=us([]);ue(()=>{get('/api/releases').then(d=>setR(d.releases||[]));const t=setInterval(()=>get('/api/releases').then(d=>setR(d.releases||[])),5000);return()=>clearInterval(t);},[]);
   return React.createElement('div',{className:'card'},React.createElement('h2',null,'Release 版本维度'),r.length===0?React.createElement('div',{className:'empty'},'无'):React.createElement('table',null,React.createElement('thead',null,React.createElement('tr',null,['release','错误','事件','sessions'].map(h=>React.createElement('th',{key:h},h)))),React.createElement('tbody',null,r.map(x=>React.createElement('tr',{key:x.release},React.createElement('td',null,React.createElement('span',{className:'badge'},x.release)),React.createElement('td',{className:'poor'},x.errors),React.createElement('td',null,x.events),React.createElement('td',null,x.sessions))))));}
 
-function App(){const [tab,setTab]=us('dash');const [picked,setPicked]=us(null);
-  const nav=[['dash','Dashboard'],['errors','错误收件箱'],['vitals','Web Vitals'],['sessions','Sessions'],['releases','Releases']];
+const e = React.createElement;
+
+// INP 火焰图（SVG icicle）：root -> 三段（input/processing/presentation）-> LoAF 脚本，热帧标红
+function InpFlamegraph({ fg }){
+  if(!fg || !fg.roots || fg.roots.length===0) return e('div',{className:'empty'},'无火焰图数据（需 INP LoAF 脚本归因）');
+  const W=720, RH=30, P=8, total=fg.totalMs||1;
+  const bars=[]; const walk=(n)=>{ bars.push(n); (n.children||[]).forEach(walk); };
+  fg.roots.forEach(walk);
+  const maxDepth=Math.max(...bars.map(b=>b.depth))+1;
+  const H=RH*maxDepth+P*2;
+  const sc=ms=>P+(ms/total)*(W-2*P);
+  const color=n=>n.synthetic?'#9ca3af':n.kind==='frame'?'#1c1c1c':n.kind==='script'?(n.isHot?'#dc2626':'#f97316'):(n.isHot?'#dc2626':'#0ea5e9');
+  const txt=n=>(n.kind==='frame'||n.isHot)?'#fff':'#1c1c1c';
+  return e('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block',background:'#fff',borderRadius:8,border:'1px solid #eceae4',maxHeight:260}},
+    bars.map(n=>{
+      const x=sc(n.startMs), w=Math.max(2,sc(n.startMs+n.durationMs)-x), y=P+n.depth*RH;
+      const label=n.durationMs>=35?(n.name.length>w/6.2?n.name.slice(0,Math.floor(w/6.2))+'…':n.name):'';
+      return e('g',{key:n.id},
+        e('title',null,n.name+' · '+(n.meta&&n.meta.sourceURL?(' '+(n.meta.sourceFunctionName||'')+' @ '+n.meta.sourceURL):'')),
+        e('rect',{x,y,width:w,height:RH-3,fill:color(n),rx:3,opacity:n.synthetic?0.5:1}),
+        label&&e('text',{x:x+4,y:y+RH/2+4,fill:txt(n),fontSize:11,fontFamily:'monospace','pointer-events':'none'},label),
+      );
+    }),
+  );
+}
+
+// 小折线（INP 样本值趋势，good/NI/poor 阈值线）
+function InpTrend({ samples }){
+  if(!samples||samples.length===0) return e('div',{className:'empty'},'无样本');
+  const W=560,H=140,P=24,max=Math.max(600,...samples.map(s=>s.value));
+  const pt=(i,v)=>[P+i*(W-2*P)/Math.max(1,samples.length-1), H-P-(v/max)*(H-2*P)];
+  const pts=samples.map((s,i)=>pt(i,s.value));
+  const path=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const line=(v,c)=>{const a=pt(0,v),b=pt(samples.length-1,v);return 'M'+a[0]+' '+a[1]+' L'+b[0]+' '+b[1];};
+  return e('svg',{width:'100%',viewBox:`0 0 ${W} ${H}`,style:{display:'block'}},
+    e('path',{d:line(200,'#16a34a88'),stroke:'#16a34a',strokeWidth:1,strokeDasharray:'4 3',fill:'none'}),
+    e('path',{d:line(500,'#dc262688'),stroke:'#dc2626',strokeWidth:1,strokeDasharray:'4 3',fill:'none'}),
+    e('path',{d:path+' L'+pts[pts.length-1][0]+' '+(H-P)+' L'+pts[0][0]+' '+(H-P)+' Z',fill:'#0ea5e922'}),
+    e('path',{d:path,fill:'none',stroke:'#0ea5e9',strokeWidth:2}),
+    pts.map((p,i)=>e('circle',{key:i,cx:p[0],cy:p[1],r:3,fill:samples[i].rating==='poor'?'#dc2626':samples[i].rating==='needs-improvement'?'#ca8a04':'#16a34a'})),
+  );
+}
+
+function InpInvestigation(){
+  const [agg,setAgg]=us(null); const [trend,setTrend]=us([]); const [rca,setRca]=us(null);
+  const [health,setHealth]=us(null); const [heal,setHeal]=us(null); const [healing,setHealing]=us(false);
+  const load=useCallback(async()=>{
+    const [v,tr,r]=await Promise.all([
+      get('/api/vitals').then(d=>(d.vitals||[]).find(x=>x.name==='INP')).catch(()=>null),
+      get('/api/vitals/INP/trend').then(d=>d.samples||[]).catch(()=>[]),
+      get('/api/vitals/INP/rca').catch(()=>null),
+    ]);
+    setAgg(v); setTrend(tr); setRca(r);
+  },[]);
+  ue(()=>{load(); const t=setInterval(load,8000); return ()=>clearInterval(t);},[load]);
+  ue(()=>{get('/api/health').then(setHealth).catch(()=>{});},[]);
+  const runHeal=async()=>{ setHealing(true); setHeal(null);
+    try{ const r=await fetch(API+'/api/demo/heal',{method:'POST',headers:{'Content-Type':'application/json'}}); setHeal(await r.json()); } catch(err){ setHeal({error:String(err)}); } setHealing(false); };
+
+  if(!agg) return e('div',{className:'card'},e('div',{className:'empty'},'无 INP 数据。先在终端跑：pnpm seed'));
+  const a=rca||{};
+  const cand=a.attribution&&a.attribution.candidates&&a.attribution.candidates[0];
+  const dist={good:trend.filter(s=>s.rating==='good').length,'needs-improvement':trend.filter(s=>s.rating==='needs-improvement').length,poor:trend.filter(s=>s.rating==='poor').length};
+  const stepTitle=(n,t)=>e('h2',{style:{fontSize:15,color:'#5f5f5d',textTransform:'uppercase',letterSpacing:'0.5px',margin:'0 0 12px'},key:'h'},n+'  '+t);
+  const strongHint = health&&health.coordinatorUrl; // 有 coordinator 才可能 strong（实际由后端探测）
+
+  return e('div',null,
+    // ── 步骤 1：聚合 ──
+    e('div',{className:'card',key:'s1'},
+      stepTitle('①','聚合 · 监控数据怎么聚合'),
+      e('div',{className:'grid3'},
+        e('div',null,e('div',{className:'stat '+rc(agg.worstRating)},(agg.p75??0).toFixed(0)+'ms'),e('div',{className:'stat-label'},'INP p75（最差会话代表）')),
+        e('div',null,e('div',{className:'stat'},(agg.p99??0).toFixed(0)+'ms'),e('div',{className:'stat-label'},'p99 · n='+agg.count+' 样本')),
+        e('div',null,e('div',{className:'stat'},Object.values(dist).reduce((x,y)=>x+y,0)),e('div',{className:'stat-label'},'rating: '+dist.good+' good / '+dist['needs-improvement']+' NI / '+dist.poor+' poor')),
+      ),
+      e('div',{style:{marginTop:12}},e(InpTrend,{samples:trend})),
+      e('div',{className:'meta',style:{marginTop:6}},'聚合方式：按 traceId/会话采集 INP → 取最差样本归因 → p75/p99 百分位（对标 CrUX）。绿线=good 阈值(200ms)，红线=poor 阈值(500ms)。'),
+    ),
+    // ── 步骤 2：归因（火焰图）──
+    e('div',{className:'card',key:'s2'},
+      stepTitle('②','归因 · 火焰图（哪段耗时最长 → 哪个脚本）'),
+      e(InpFlamegraph,{fg:a.flamegraph}),
+      cand && e('div',{style:{marginTop:10,padding:10,background:'#fff7e6',borderLeft:'3px solid #fa8c16',borderRadius:4}},
+        e('div',{style:{marginBottom:4}},e('b',null,'归因候选链：'),e('span',{className:'badge',style:{background:'#1f6feb33',color:'#58a6ff'}},cand.kind),' 置信度 ',e('b',null,(cand.confidence*100).toFixed(0)+'%')),
+        (cand.evidence||[]).map((ev,i)=>e('div',{key:i,className:'meta',style:{padding:'2px 0'}},'• '+ev)),
+        cand.suggestedHealIds&&cand.suggestedHealIds.length>0&&e('div',{className:'meta',style:{marginTop:4}},'建议修复 → '+cand.suggestedHealIds.join(', ')),
+      ),
+      e('div',{className:'meta',style:{marginTop:6}},'icicle：根=INP 总时长 → input/processing/presentation 三段（红=主导/热帧）→ LoAF 脚本（红=≥p99·0.5）。主导段决定修复方向。'),
+    ),
+    // ── 步骤 3：根因（可解释推导链）──
+    e('div',{className:'card',key:'s3'},
+      stepTitle('③','根因 · 怎么导致的（步步推导，非黑箱）'),
+      (a.trace||[]).length===0?e('div',{className:'empty'},'无推导链'):
+        (a.trace||[]).map((t,i)=>e('div',{key:i,style:{display:'flex',gap:10,padding:'8px 0',borderBottom:'1px solid #eceae4'}},
+          e('div',{style:{flex:'0 0 110px',fontWeight:600,color:'#1c1c1c'}},t.step),
+          e('div',{style:{flex:1}},e('div',{style:{fontFamily:'monospace',fontSize:13}},t.data),e('div',{className:'meta'},t.conclusion)),
+        )),
+      (a.findings||[]).map((f,i)=>e('div',{key:'f'+i,style:{marginTop:8,padding:8,background:'#fef2f2',borderLeft:'3px solid #dc2626',borderRadius:4}},
+        e('div',{style:{fontWeight:600}},f.title),e('div',{className:'meta'},f.evidence))),
+    ),
+    // ── 步骤 4：源码（sourcemap 还原）──
+    e('div',{className:'card',key:'s4'},
+      stepTitle('④','源码 · 结合源码怎么解决（LoAF → sourcemap 还原）'),
+      a.sourceLocation&&a.sourceLocation.resolved
+        ? e('div',null,
+            e('div',{className:'good',style:{marginBottom:6}},'✓ '+a.sourceLocation.source+':'+a.sourceLocation.line+':'+a.sourceLocation.column
+              +(a.loafScript?('  ·  LoAF: '+(a.loafScript.sourceFunctionName||'<anon>')+' ('+(a.loafScript.duration??0).toFixed(0)+'ms)'):'')),
+            e('pre',{style:{whiteSpace:'pre-wrap',margin:0,maxHeight:240}},a.sourceLocation.sourceSnippet||'(无片段)'),
+          )
+        : e('div',{className:'empty'},'未还原（需上传该 release 的 bundle.js + bundle.js.map）。种子已自带：pnpm seed'),
+    ),
+    // ── 步骤 5：解决（具体修复）──
+    e('div',{className:'card',key:'s5'},
+      stepTitle('⑤','解决 · 怎么修'),
+      (a.fixes||[]).map((f,i)=>e('div',{key:i,style:{marginBottom:12,padding:10,background:'#f0fdf4',borderLeft:'3px solid #16a34a',borderRadius:4}},
+        e('div',{style:{fontWeight:600,marginBottom:4}},'问题：'+f.problem),
+        e('div',{className:'meta',style:{marginBottom:6}},f.solution),
+        f.code&&e('pre',{style:{whiteSpace:'pre-wrap',margin:0,fontSize:12}},f.code),
+      )),
+      (a.healActions||[]).length>0 && e('div',{style:{marginTop:8}},
+        e('div',{className:'meta',style:{marginBottom:4}},'确定性自愈建议（白名单 · safe）：'),
+        a.healActions.map(h=>e('span',{key:h.id,className:'badge',style:{marginRight:6,background:'#16a34a1a',color:'#16a34a'},title:h.description},h.label)),
+      ),
+    ),
+    // ── 步骤 6：自愈（闭环）──
+    e('div',{className:'card',key:'s6'},
+      stepTitle('⑥','自愈 · 怎么自愈（diagnose → Verifier → repro 红转绿 → GateVector → PR）'),
+      e('div',{style:{marginBottom:10,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+        e('button',{className:'btn',onClick:runHeal,disabled:healing},healing?'运行中…':'▶ 运行自愈'),
+        e('span',{className:'badge'}, strongHint?'混合轨（有 key 走真 /auto-heal，无 key 走 demo）':'demo 轨（stub LLM + 真实 gate）'),
+        e('span',{className:'meta'}, health&&health.coordinatorUrl?('coordinator: '+health.coordinatorUrl):'未启 coordinator（pnpm start 启动完整平台）'),
+      ),
+      heal&&heal.error&&e('div',{className:'poor'},'出错: '+heal.error),
+      heal&&!heal.error && e('div',null,
+        e('div',{className:'meta',style:{marginBottom:8}},heal.note||''),
+        (heal.stages||[]).map((s,i)=>e('div',{key:i,style:{display:'flex',gap:10,padding:'6px 0',borderBottom:'1px solid #eceae4',alignItems:'center'}},
+          e('div',{style:{flex:'0 0 170px',fontWeight:600}},s.stage),
+          e('div',null, e('span',{className:'badge '+(s.status==='auto-mr'?'good':s.status==='accepted'||s.status==='red→green'||s.status==='done'?'good':s.status==='human'||s.status==='fail'||s.status==='refuted'?'poor':'')},s.status), s.detail&&e('span',{className:'meta',style:{marginLeft:8}},s.detail)),
+        )),
+        heal.result&&heal.result.decision && e('div',{style:{marginTop:10,padding:10,background:heal.result.decision.delivery==='auto-mr'?'#f0fdf4':'#fff7e6',borderLeft:'3px solid '+(heal.result.decision.delivery==='auto-mr'?'#16a34a':'#fa8c16'),borderRadius:4}},
+          e('div',{style:{fontWeight:600,marginBottom:6}},'GateVector 交付：'+heal.result.decision.delivery),
+          (()=>{const g=heal.result.decision.gate||{};return e('div',{style:{display:'flex',flexWrap:'wrap',gap:6}},
+            [['verifier',g.verifier],['verifierConfident',g.verifierConfident],['reproRedBefore',g.reproRedBefore],['reproGreenAfter',g.reproGreenAfter],['suiteGreen',g.suiteGreen],['typecheck',g.typecheck],['contamination',g.contamination],['locality',JSON.stringify(g.locality)]].map(([k,v])=>
+              e('span',{key:k,className:'badge '+(v===true||v==='pass'||v==='clean'?'good':(v===false||v==='refuted'||v==='detected')?'poor':'')},k+': '+String(v))),
+          );})(),
+          heal.result.regressionVotes && e('div',{className:'meta',style:{marginTop:6}},'回归投票：repro '+heal.result.regressionVotes.reproPasses+'/'+heal.result.regressionVotes.replays+'，suite '+heal.result.regressionVotes.suitePasses+'/'+heal.result.regressionVotes.replays),
+          heal.result.delivery&&heal.result.delivery.prUrl && e('div',{style:{marginTop:6}},e('b',null,'PR：'),e('a',{href:heal.result.delivery.prUrl,target:'_blank',style:{color:'#0969da'}},heal.result.delivery.prUrl)),
+          (heal.result.decision.reasons||[]).length>0 && e('div',{className:'meta',style:{marginTop:6}},heal.result.decision.reasons[0]),
+        ),
+      ),
+      // PR#3 真实留痕对照
+      e('div',{style:{marginTop:12,padding:10,background:'#f6f8fa',borderLeft:'3px solid #0969da',borderRadius:4}},
+        e('div',{style:{fontWeight:600,marginBottom:4}},'真实自愈留痕（对照，非 demo）'),
+        e('div',{className:'meta'},'ARK doubao 诊断 + MiniMax 跨 provider 独立 Verifier（refuted=false, conf 0.95）+ LLM 生成 repro 红转绿 + GateVector auto-mr → 真开 PR：'),
+        e('a',{href:'https://github.com/huabuyu05100510/monit-self-heal-test/pull/3',target:'_blank',style:{color:'#0969da'}},'github.com/huabuyu05100510/monit-self-heal-test/pull/3'),
+        e('div',{className:'meta',style:{marginTop:4}},'复现：node scripts/showcase-record.mjs（真 LLM + 真 PR）'),
+      ),
+    ),
+  );
+}
+
+function App(){const [tab,setTab]=us('inp');const [picked,setPicked]=us(null);
+  const nav=[['inp','INP 归因与自愈 ★'],['dash','Dashboard'],['errors','错误收件箱'],['vitals','Web Vitals'],['sessions','Sessions'],['releases','Releases']];
   return React.createElement('div',{className:'app'},
     React.createElement('div',{className:'sidebar'},React.createElement('h1',null,'smarty-observability'),
       nav.map(([k,l])=>React.createElement('div',{key:k,className:'nav-item '+(tab===k?'active':''),onClick:()=>{setTab(k);setPicked(null);}},l))),
     React.createElement('div',{className:'main'},
+      tab==='inp'&&React.createElement(InpInvestigation),
       tab==='dash'&&React.createElement(Dashboard),
       tab==='errors'&&(picked?React.createElement(ErrorDetail,{fp:picked,onBack:()=>setPicked(null)}):React.createElement(ErrorInbox,{onPick:setPicked})),
       tab==='vitals'&&React.createElement(Vitals),

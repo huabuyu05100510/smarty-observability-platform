@@ -9,6 +9,7 @@
     "dev": "pnpm -r run dev",
     "test": "vitest run",
     "typecheck": "pnpm -r exec tsc --noEmit",
+    "security-check": "node scripts/security-check.mjs",
     "backend": "node scripts/start-backend.mjs",
     "start": "node scripts/start-platform.mjs",
     "seed": "node scripts/seed-demo.mjs",

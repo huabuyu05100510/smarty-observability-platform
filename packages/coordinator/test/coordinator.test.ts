@@ -113,7 +113,43 @@ describe('coordinator server routes', () => {
     expect(res.status).toBe(503);
   });
 
-  it('POST /heal/apply returns rollback token', async () => {
+  it('POST /heal/apply 登记签名 patch + GET /heal/patches + POST /heal/revoke 闭环', async () => {
+    const h = createCoordinatorServer({ port: 0 });
+    handles.push(h);
+    await new Promise(r => h.server.once('listening', r));
+    const addr = h.server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 3920;
+    const base = `http://127.0.0.1:${port}`;
+
+    // 1. /heal/apply 登记签名 patch
+    const res = await fetch(`${base}/heal/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fingerprint: 'fp-1', patchType: 'guard', targetPath: 'window.app.foo' }),
+    });
+    const json = await res.json() as { rollbackToken: string; track: string; patchId: string; signature: string };
+    expect(res.status).toBe(200);
+    expect(json.track).toBe('runtime-hotfix');
+    expect(json.rollbackToken).toMatch(/^rb-/);
+    expect(json.patchId).toMatch(/^patch-/);
+    expect(json.signature).toMatch(/^[0-9a-f]{128}$/); // Ed25519 = 64 bytes
+
+    // 2. /heal/patches 拉取活跃 patch
+    const list = await (await fetch(`${base}/heal/patches`)).json() as { patches: Array<{ id: string; fingerprint: string }> };
+    expect(list.patches.length).toBe(1);
+    expect(list.patches[0].fingerprint).toBe('fp-1');
+
+    // 3. /heal/revoke 吊销
+    const rev = await (await fetch(`${base}/heal/revoke`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patchId: json.patchId }),
+    })).json() as { revoked: boolean };
+    expect(rev.revoked).toBe(true);
+    const list2 = await (await fetch(`${base}/heal/patches`)).json() as { patches: unknown[] };
+    expect(list2.patches.length).toBe(0);
+  });
+
+  it('POST /heal/apply 拒绝非行为保留 patchType（masking/prototype）', async () => {
     const h = createCoordinatorServer({ port: 0 });
     handles.push(h);
     await new Promise(r => h.server.once('listening', r));
@@ -122,12 +158,9 @@ describe('coordinator server routes', () => {
     const res = await fetch(`http://127.0.0.1:${port}/heal/apply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ proposalId: 'p1' }),
+      body: JSON.stringify({ fingerprint: 'fp', patchType: 'prototype', targetPath: 'a.b' }),
     });
-    const json = await res.json() as { rollbackToken: string; track: string };
-    expect(res.status).toBe(200);
-    expect(json.track).toBe('runtime-hotfix');
-    expect(json.rollbackToken).toMatch(/^rb-/);
+    expect(res.status).toBe(400);
   });
 
   it('unknown route returns 404', async () => {

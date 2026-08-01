@@ -23,6 +23,7 @@
     "@monit/fingerprint": "workspace:*",
     "@monit/pii": "workspace:*",
     "@monit/sampling": "workspace:*",
+    "@monit/crypto-kit": "workspace:*",
     "pako": "^2.1.0"
   }
 }

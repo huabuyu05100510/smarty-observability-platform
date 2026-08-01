@@ -59,7 +59,7 @@ function buildReplaceExpression(patch: PatchInput): string {
   const target = patch.targetPath ?? '';
   const code = patch.code ?? '';
   return `(function(){
-    var path = "${target}".split('.');
+    var path = ${JSON.stringify(target)}.split('.');
     var obj = window;
     for (var i=0;i<path.length-1;i++){ obj = obj[path[i]]; if(!obj) return false; }
     obj[path[path.length-1]] = ${code};
@@ -72,7 +72,7 @@ function buildWrapExpression(patch: PatchInput): string {
   const target = patch.targetPath ?? '';
   const code = patch.code ?? '';
   return `(function(){
-    var path = "${target}".split('.');
+    var path = ${JSON.stringify(target)}.split('.');
     var obj = window;
     for (var i=0;i<path.length-1;i++){ obj = obj[path[i]]; if(!obj) return false; }
     var key = path[path.length-1];
@@ -87,7 +87,7 @@ function buildWrapExpression(patch: PatchInput): string {
 function buildGuardExpression(patch: PatchInput): string {
   const target = patch.targetPath ?? '';
   return `(function(){
-    var path = "${target}".split('.');
+    var path = ${JSON.stringify(target)}.split('.');
     var obj = window;
     for (var i=0;i<path.length-1;i++){ obj = obj[path[i]]; if(!obj) return false; }
     var key = path[path.length-1];
@@ -97,7 +97,11 @@ function buildGuardExpression(patch: PatchInput): string {
       try {
         var r = orig.apply(this, arguments);
         return (r == null) ? [] : r;
-      } catch(e) { return []; }
+      } catch(e) {
+        // 仅吞掉空指针型 TypeError（白屏主因）；其它异常照常抛出，避免掩盖无关 bug
+        if (e instanceof TypeError) return [];
+        throw e;
+      }
     };
     return true;
   })();`;
@@ -140,7 +144,7 @@ function buildErrorBoundaryExpression(patch: PatchInput): string {
 function buildPrototypeExpression(patch: PatchInput): string {
   const target = patch.targetPath ?? ''; // 如 "Array.prototype.map"
   return `(function(){
-    var path = "${target}".split('.');
+    var path = ${JSON.stringify(target)}.split('.');
     var obj = window;
     for (var i=0;i<path.length-1;i++){ obj = obj[path[i]]; if(!obj) return false; }
     var key = path[path.length-1];
@@ -148,7 +152,10 @@ function buildPrototypeExpression(patch: PatchInput): string {
     if (typeof orig !== 'function') return false;
     obj[key] = function(){
       try { return orig.apply(this, arguments); }
-      catch(e) { return Array.isArray(this) ? [] : undefined; }
+      catch(e) {
+        if (e instanceof TypeError) return Array.isArray(this) ? [] : undefined;
+        throw e;
+      }
     };
     return true;
   })();`;

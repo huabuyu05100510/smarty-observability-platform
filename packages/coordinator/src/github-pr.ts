@@ -52,7 +52,8 @@ export async function applyPatchesLocally(
       skipped++;
       continue;
     }
-    const updated = original.replace(hunk.searchCode, hunk.replaceCode);
+    // replacer 函数：避免 replaceCode 中的 $&/$1/$' 被当特殊模式解释（JS 代码常含 $）
+    const updated = original.replace(hunk.searchCode, () => hunk.replaceCode);
     await writeFile(hunk.filePath, updated);
     applied++;
   }
@@ -92,6 +93,7 @@ export async function createGithubPr(
     }
 
     // 4. PUT 每个文件（取 repo 当前内容 -> 应用 searchCode->replaceCode -> 上传合成后的完整文件）
+    let appliedHunks = 0;
     for (const hunk of proposal.patches) {
       // 取现有文件 sha + 内容
       const fileRes = await fetch(`${API}/repos/${repo}/contents/${hunk.filePath}?ref=${branch}`, {
@@ -106,16 +108,19 @@ export async function createGithubPr(
           currentContent = Buffer.from(fileJson.content, 'base64').toString('utf-8');
         }
       }
-      // 合成完整新文件：在现有内容上做 searchCode->replaceCode；文件不存在或 searchCode 不在则直接用 replaceCode（新建）
-      let newContent: string;
+      // 合成新文件：searchCode 必须命中（精确或归一化空白）。
+      // 命中不了 + 文件已存在 -> 【跳过该 hunk】（防幻觉）；绝不用 replaceCode 覆盖整文件（数据丢失，
+      // 且与本地 applyPatchesLocally 的 skip 行为不一致）。仅当文件不存在（新建）时才用 replaceCode 整文件创建。
+      let newContent: string | null = null;
       if (currentContent && currentContent.includes(hunk.searchCode)) {
-        newContent = currentContent.replace(hunk.searchCode, hunk.replaceCode);
-      } else if (currentContent && hunk.searchCode && hunk.replaceCode) {
-        // searchCode 空白差异：用归一化空白匹配定位再替换
-        newContent = replaceByNormalizedWhitespace(currentContent, hunk.searchCode, hunk.replaceCode) ?? hunk.replaceCode;
-      } else {
-        newContent = hunk.replaceCode;
+        newContent = currentContent.replace(hunk.searchCode, () => hunk.replaceCode);
+      } else if (currentContent && hunk.searchCode) {
+        newContent = replaceByNormalizedWhitespace(currentContent, hunk.searchCode, hunk.replaceCode);
+      } else if (!currentContent && hunk.replaceCode) {
+        newContent = hunk.replaceCode; // 新建文件
       }
+      if (newContent === null) continue; // searchCode 不命中 -> 跳过
+
       const content = Buffer.from(newContent, 'utf-8').toString('base64');
       const putRes = await fetch(`${API}/repos/${repo}/contents/${hunk.filePath}`, {
         method: 'PUT',
@@ -128,8 +133,15 @@ export async function createGithubPr(
         }),
       });
       if (!putRes.ok && putRes.status !== 422) {
+        // 部分失败：删除已建的僵尸分支，避免遗留半成品 fix 分支
+        await deleteBranch(token, repo, branch).catch(() => {});
         return { ok: false, error: `put file ${hunk.filePath} ${putRes.status}` };
       }
+      appliedHunks++;
+    }
+    if (appliedHunks === 0) {
+      await deleteBranch(token, repo, branch).catch(() => {});
+      return { ok: false, error: 'no hunk applied (searchCode not found in any target file)' };
     }
 
     // 5. 开 PR
@@ -159,6 +171,11 @@ export async function createGithubPr(
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** 删除分支引用（部分失败时清理僵尸 fix 分支）*/
+async function deleteBranch(token: string, repo: string, branch: string): Promise<void> {
+  await fetch(`${API}/repos/${repo}/git/refs/heads/${branch}`, { method: 'DELETE', headers: headers(token) });
 }
 
 /** 空白归一化匹配替换：容忍 searchCode 与文件在缩进/换行上的微小差异 */

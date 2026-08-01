@@ -108,7 +108,10 @@ export class Reporter {
       await this.opts.offlineStore.add({
         payload: events, attempts: 0, lastAttemptAt: Date.now(), dsn: this.opts.endpoint,
       })
-    } catch { /* IndexedDB 也炸：丢 */ }
+    } catch (e) {
+      // IDB 写失败（配额满/事务冲突）：不静默丢，记 warn 便于排查
+      console.warn('[reporter] offline enqueue failed; batch may be lost on reload:', e)
+    }
     void this.flushOffline()
   }
 
@@ -159,12 +162,30 @@ export class Reporter {
  * 单次发送。返回 true=成功(2xx/queued)，false=失败。
  * fetch keepalive 主（读 status，跨源做正规 preflight）；sendBeacon(text/plain) 兜底。
  */
+/** 单事件 payload 体积上限（< 64KB keepalive 限）。超限剥离 sessionReplay，避免整批被拖累/卸载时丢失。 */
+const SINGLE_EVENT_MAX_BYTES = 48_000;
+
+/** 若事件序列化超限且含 sessionReplay，剥离之并标记（保留事件本身上报）。 */
+function stripOversizedReplay(e: MonitorEvent): MonitorEvent {
+  const raw = JSON.stringify(e);
+  if (byteLength(raw) <= SINGLE_EVENT_MAX_BYTES) return e;
+  const p = e.payload;
+  if (p && typeof p === 'object' && 'sessionReplay' in (p as Record<string, unknown>)) {
+    const np = { ...(p as Record<string, unknown>) };
+    delete np.sessionReplay;
+    np.sessionReplayDropped = true;
+    return { ...e, payload: np };
+  }
+  return e;
+}
+
 async function sendOnce(
   dsn: string,
   events: MonitorEvent[],
   opts: { compress?: boolean },
 ): Promise<boolean> {
-  const body = JSON.stringify({ events })
+  const safeEvents = events.map(stripOversizedReplay);
+  const body = JSON.stringify({ events: safeEvents })
 
   // 可选 gzip（pako 动态 import，不可用则降级未压缩）
   if (opts.compress) {
@@ -186,7 +207,9 @@ async function sendOnce(
   // 主：fetch。keepalive 能在卸载时存活，但有 ~64KB body 上限——
   // 超限时改普通 fetch（无 64KB 限，但卸载时可能被取消）。
   if (typeof fetch === 'function') {
-    const big = body.length > 60000
+    // 注意：必须按【字节】而非字符数判断——body.length 数的是 UTF-16 码元，
+    // CJK/多字节载荷实际字节数远大于 length，会绕过 64KB 上限被 Chrome 静默拒收。
+    const big = byteLength(body) > 60000
     try {
       const resp = await fetch(dsn, {
         method: 'POST',
@@ -207,6 +230,12 @@ async function sendOnce(
     } catch { /* ignore */ }
   }
   return false
+}
+
+/** 字符串字节长度（UTF-8）。TextEncoder 不可用时回退码元数（近似）。 */
+function byteLength(s: string): number {
+  if (typeof TextEncoder === 'function') return new TextEncoder().encode(s).byteLength;
+  return s.length;
 }
 
 /** Uint8Array → base64（浏览器 btoa chunked + Node Buffer 兼容） */

@@ -54,14 +54,32 @@ function log(msg, cls) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// 防 XSS：回放数据可能来自粘贴的 JSON 或任意 URL，必须按不可信处理。
+const DANGEROUS_TAGS = new Set(['script', 'iframe', 'object', 'embed', 'link', 'meta', 'base']);
+function safeSetAttribute(el, name, value) {
+  const lname = String(name).toLowerCase();
+  // 拒绝事件处理器属性（onerror/onload…）与 javascript:/data: 脚本 URL
+  if (lname.startsWith('on')) return;
+  if ((lname === 'src' || lname === 'href' || lname === 'xlink:href') && /^\s*(javascript|data):/i.test(String(value))) return;
+  el.setAttribute(name, value);
+}
+
 // 从 SerializedNode 重建 DOM（递归）
 function buildNode(n) {
   let el;
   if (n.nodeType === 3) el = document.createTextNode(n.textContent || '');
   else if (n.nodeType === 8) el = document.createComment(n.textContent || '');
   else if (n.nodeType === 1) {
-    el = document.createElement(n.tagName || 'div');
-    for (const [k, v] of Object.entries(n.attributes || {})) el.setAttribute(k, v);
+    const tag = String(n.tagName || 'div').toLowerCase();
+    if (DANGEROUS_TAGS.has(tag)) {
+      // 危险标签降级为可见文本，不执行脚本/不嵌套外部资源
+      el = document.createElement('span');
+      el.textContent = '<' + tag + '>';
+      el.title = 'blocked: <' + tag + '>';
+    } else {
+      el = document.createElement(tag);
+      for (const [k, v] of Object.entries(n.attributes || {})) safeSetAttribute(el, k, v);
+    }
     for (const c of (n.children || [])) el.appendChild(buildNode(c));
   } else el = document.createElement('div');
   // 标记节点 id（用 data 属性，不污染原 DOM）
@@ -96,7 +114,7 @@ function applyMutation(m) {
     const n = nodeMap.get(r.id); if (n) n.remove();
   }
   for (const at of m.attrs || []) {
-    const n = nodeMap.get(at.id); if (n) n.setAttribute(at.name, at.newValue);
+    const n = nodeMap.get(at.id); if (n) safeSetAttribute(n, at.name, at.newValue);
   }
   for (const tx of m.texts || []) {
     const n = nodeMap.get(tx.id); if (n && n.textContent !== undefined) n.textContent = tx.newValue;

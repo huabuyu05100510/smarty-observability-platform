@@ -40,6 +40,19 @@ describe('stack frame normalization', () => {
     expect(f).not.toMatch('a1b2c3d4');
     expect(f).toMatch(/\[hash\]/);
   });
+
+  it('does not corrupt paren-less Safari/Firefox frames', () => {
+    // Safari/Firefox: fn@app.js:42:17 —— 无尾括号，绝不能凭空补 ')'
+    const safari = normalizeStackFrame('renderList@app.js:42:17');
+    expect(safari).toBe('renderList@app.js');
+    expect(safari).not.toMatch(/\)$/);
+
+    // 同一崩溃点，Chrome (at fn (url:l:c)) 与 Firefox (fn@url:l:c) 归一后结构等价
+    const chrome = normalizeStackFrame('    at renderList (app.js:42:17)');
+    // Chrome 形态保留其 ')'；两者行列号都已剥离
+    expect(chrome).not.toMatch(/42|17/);
+    expect(safari).not.toMatch(/42|17/);
+  });
 });
 
 describe('fingerprintStack groups same root cause', () => {

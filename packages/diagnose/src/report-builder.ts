@@ -93,6 +93,7 @@ export function buildReportFromEvents(
     url: opts.url ?? '',
     route: opts.route,
     createdAt,
+    traceId: events[0]?.traceId,
     vitals,
     inp,
     errors: trimmedErrors,

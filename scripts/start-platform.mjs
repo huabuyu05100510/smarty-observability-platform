@@ -36,20 +36,39 @@ const llmConfig = {
   provider: llmCfg.provider ?? 'openai',
 };
 
-// 1. backend（数据面 + React 面板 + JSONL 持久化 + 自动 AI 诊断 + 自动自愈闭环）
-// 可选：自动自愈（AI 诊断后调 coordinator /auto-heal 跑完整 runMrDraftTrack → 开 PR）
-// demo 源文件：与测试 repo 内容一致（LLM 生成的 searchCode 才能匹配）
-let autoHeal = undefined;
+// 1. backend（数据面 + React 面板 + JSONL 持久化 + 自动 AI 诊断 + 自愈 demo/strong 轨）
+// 自愈配置：coordinator strong 轨需 repoRoot + 独立 verifierConfig + GitHub + authToken 齐备。
+// 有 config/llm.minimax.json(+zhipu 回退) + github.config.json 才 strong-ready（真跨 provider Verifier + 真 PR）；
+// 否则面板 /api/demo/heal 自动落 demo 轨（stub LLM + 真实 gate），不强求 key。
+const fixtureRepo = join(__dirname, '..', 'showcase', 'fixture-repo');
+let fixtureSource = '';
+let fixtureTest = '';
 try {
-  const demoSource = readFileSync('/tmp/monit-test-repo/src/renderList.js', 'utf-8');
-  const demoTest = readFileSync('/tmp/monit-test-repo/src/renderList.test.js', 'utf-8');
-  autoHeal = {
-    coordinatorUrl: `http://127.0.0.1:3920`,
-    sourceFiles: [{ path: 'src/renderList.js', content: demoSource }],
-    testFiles: [{ path: 'src/renderList.test.js', content: demoTest }],
-    riskThreshold: 10,
-  };
-} catch { /* /tmp/monit-test-repo 不存在则不自愈，仅诊断 */ }
+  fixtureSource = readFileSync(join(fixtureRepo, 'src', 'renderList.js'), 'utf-8');
+  fixtureTest = readFileSync(join(fixtureRepo, 'src', 'renderList.test.js'), 'utf-8');
+} catch { /* fixture 缺失不影响启动，仅 demo 轨无法跑 fs */ }
+
+// 独立 verifier（跨 provider，BP-2）：优先 MiniMax，回退智谱
+let verifierCfg = null;
+try {
+  const mm = JSON.parse(readFileSync(join(__dirname, '..', 'config', 'llm.minimax.json'), 'utf-8'));
+  verifierCfg = { baseUrl: mm.baseUrl, apiKey: mm.apiKey, model: mm.model, temperature: mm.temperature ?? 0.1, provider: mm.provider ?? 'openai' };
+} catch {
+  try {
+    const zp = JSON.parse(readFileSync(join(__dirname, '..', 'config', 'llm.zhipu.json'), 'utf-8'));
+    verifierCfg = { baseUrl: zp.baseUrl, apiKey: zp.apiKey, model: zp.model, temperature: zp.temperature ?? 0.1, provider: zp.provider ?? 'openai' };
+  } catch { /* 无独立 verifier -> 非 strong-ready，走 demo 轨 */ }
+}
+
+const STRONG_TOKEN = process.env.MONIT_STRONG_TOKEN || 'monit-strong-demo';
+const strongReady = !!verifierCfg && !!ghCfg && !!fixtureSource;
+
+const autoHeal = {
+  coordinatorUrl: 'http://127.0.0.1:3920',
+  sourceFiles: [{ path: 'src/renderList.js', content: fixtureSource }],
+  testFiles: [{ path: 'src/renderList.test.js', content: fixtureTest }],
+  ...(strongReady ? { coordinatorToken: STRONG_TOKEN } : {}),
+};
 const backend = createBackendServer({
   port: 3921,
   dbPath: './data/events.jsonl',
@@ -57,8 +76,15 @@ const backend = createBackendServer({
   llmConfig,
   autoHeal,
 });
-// 2. coordinator（自愈 HTTP 总线，接 LLM + 可选 GitHub）
-const coordinator = createCoordinatorServer({ port: 3920, llmConfig, githubConfig: ghCfg ?? undefined });
+// 2. coordinator（自愈 HTTP 总线，接 LLM + 可选 GitHub + 独立 verifier + repoRoot）
+const coordinator = createCoordinatorServer({
+  port: 3920,
+  llmConfig,
+  verifierConfig: verifierCfg ?? undefined,
+  repoRoot: strongReady ? fixtureRepo : undefined,
+  githubConfig: ghCfg ?? undefined,
+  authToken: strongReady ? STRONG_TOKEN : undefined,
+});
 
 await Promise.all([
   new Promise(r => backend.server.once('listening', r)),

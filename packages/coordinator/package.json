@@ -20,6 +20,7 @@
     "@monit/contracts": "workspace:*",
     "@monit/repair-agent": "workspace:*",
     "@monit/diagnose": "workspace:*",
-    "@monit/guardrails": "workspace:*"
+    "@monit/guardrails": "workspace:*",
+    "@monit/server-kit": "workspace:*"
   }
 }
