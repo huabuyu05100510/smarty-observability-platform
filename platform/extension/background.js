@@ -34,29 +34,8 @@ function bufferEvent(ev) {
   return bufferQueue;
 }
 
-// 自愈自动回滚:chrome.alarms 调度(抗 SW 终止)。token 作 alarm 名,到点对 apply 时的 tab rollback;
-// 若页面已卸载/导航,patch 随之自然失效,rollback 失败忽略。
-const PENDING_KEY = 'pendingRollbacks';
-async function setPendingRollback(token, info) {
-  try { const { [PENDING_KEY]: m = {} } = await chrome.storage.local.get(PENDING_KEY); m[token] = info; await chrome.storage.local.set({ [PENDING_KEY]: m }); } catch {}
-}
-async function getPendingRollback(token) {
-  try { const { [PENDING_KEY]: m = {} } = await chrome.storage.local.get(PENDING_KEY); return m[token]; } catch { return null; }
-}
-async function delPendingRollback(token) {
-  try { const { [PENDING_KEY]: m = {} } = await chrome.storage.local.get(PENDING_KEY); if (m[token]) { delete m[token]; await chrome.storage.local.set({ [PENDING_KEY]: m }); } } catch {}
-}
-chrome.alarms?.onAlarm?.addListener(async (alarm) => {
-  const token = alarm && alarm.name;
-  if (!token || !token.startsWith('heal-')) return;
-  const info = await getPendingRollback(token);
-  if (info && info.tabId != null) {
-    try { await chrome.scripting.executeScript({ target: { tabId: info.tabId, allFrames: false }, func: (t) => globalThis.__inpHeal?.rollback(t), args: [token], world: 'MAIN' }); }
-    catch (e) { /* tab 已关闭/导航 → patch 随页面卸载自然失效 */ }
-  }
-  await delPendingRollback(token);
-  chrome.runtime.sendMessage({ type: 'HEAL_AUTO_ROLLED_BACK', token }).catch(() => {});
-});
+// 自愈 patch 默认保留(会话内有效):prototype patch 仅活在当前页面实例,刷新/导航/关 tab 即自然失效。
+// 用户可随时点「撤回」→ ROLLBACK_HEAL 即时还原(见下方 handler)。无需定时自动回滚。
 
 const SELF_TEST_FUNC = () => {
   // 在目标 tab 的 MAIN world 跑：合成 60ms 长帧，等一拍，查 LoAF observer 是否采到
@@ -129,11 +108,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.id) { sendResponse({ ok: false, reason: 'no active tab' }); return; }
         const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, func: (templateId, opts) => globalThis.__inpHeal?.apply(templateId, opts), args: [msg.templateId, msg.opts || {}], world: 'MAIN' });
-        // 调度自动回滚(chrome.alarms,抗 SW 终止;到点对 apply 时的 tab rollback)
-        if (result && result.ok && result.token) {
-          const min = (msg.opts && Number(msg.opts.rollbackMin)) || 30;
-          try { await chrome.alarms.create(result.token, { delayInMinutes: Math.max(1, min) }); await setPendingRollback(result.token, { tabId: tab.id, templateId: msg.templateId }); } catch {}
-        }
         sendResponse(result);
       } catch (e) { sendResponse({ ok: false, reason: 'executeScript failed: ' + (e?.message || String(e)) }); }
     })();
@@ -145,7 +119,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         if (!tab?.id) { sendResponse({ ok: false, reason: 'no active tab' }); return; }
         const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, func: (token) => globalThis.__inpHeal?.rollback(token), args: [msg.token], world: 'MAIN' });
-        try { await chrome.alarms.clear(msg.token); await delPendingRollback(msg.token); } catch {}
         sendResponse(result);
       } catch (e) { sendResponse({ ok: false, reason: 'executeScript failed: ' + (e?.message || String(e)) }); }
     })();

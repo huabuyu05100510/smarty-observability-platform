@@ -91,17 +91,24 @@
   const RealtimePanel = (props) => VitalRealtimePanel(Object.assign({ signal: 'inp' }, props));
 
   // ================= 自愈 =================
-  function HealPanel({ live, appliedTokens, setAppliedTokens, settings }) {
+  function HealPanel({ domain, live, appliedTokens, setAppliedTokens }) {
     const [busy, setBusy] = React.useState(null);
     const [result, setResult] = React.useState(null);
     const [causal, setCausal] = React.useState(null);
-    const templates = (global.__inpHeal && global.__inpHeal.list()) || [];
+    const [loop, setLoop] = React.useState(null); // { running, iter, current, result, error }
+    const liveRef = React.useRef(live); liveRef.current = live; // loop 异步运行期间读最新 live(用户继续浏览产生 treated)
+    const meanOf = (xs) => xs && xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
     const baseline = live?.inp?.value;
+    // 领域专家 checklist(本 tab 核心:常见根因 → 解法;运行时模板/MR 草稿挂在对应条目上)
+    const CL = (global.__checklist && global.__checklist.CHECKLIST) || {};
+    const KIND_META = (global.__checklist && global.__checklist.KIND_META) || {};
+    const items = CL[domain] || [];
+    const domainLabel = ({ inp: 'INP', lcp: 'LCP', fcp: 'FCP', cls: 'CLS', error: '错误' })[domain] || '—';
 
     const apply = (tplId) => {
       if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) { setResult({ ok: false, reason: 'chrome.runtime 不可用' }); setTimeout(() => setResult(null), 3000); return; }
       setBusy(tplId);
-      chrome.runtime.sendMessage({ type: 'APPLY_HEAL', templateId: tplId, opts: { rollbackMin: (settings && settings.autoRollbackMin) || 30 } }, (resp) => {
+      chrome.runtime.sendMessage({ type: 'APPLY_HEAL', templateId: tplId, opts: {} }, (resp) => {
         setBusy(null);
         if (chrome.runtime.lastError || !resp) setResult({ ok: false, reason: '消息失败' });
         else if (resp.ok) {
@@ -124,8 +131,25 @@
     const rollback = (token) => { if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) return; chrome.runtime.sendMessage({ type: 'ROLLBACK_HEAL', token }, (resp) => { if (resp?.ok) setAppliedTokens((p) => p.filter((t) => t.token !== token)); }); };
     const rollbackAll = () => appliedTokens.forEach((t) => rollback(t.token));
 
+    // 自愈 loop:①定位→②生候选(源码diff+代理)→③apply→④Welch t 验证→⑤优秀?没到则重新定位再来,直至优秀/候选耗尽。
+    // loop 结束后人决定提不提 MR(提交权属于人)。详见 docs/heal-loop.md。
+    const runLoop = async () => {
+      const HL = globalThis.__healLoop;
+      if (!HL) { setLoop({ running: false, error: 'heal-loop.js 未加载' }); return; }
+      const baseVals = (liveRef.current?.interactions || []).map((i) => i.value).filter((v) => v > 0).slice(-8);
+      const event = liveRef.current?.inp ? Object.assign({}, liveRef.current.inp, { loafScripts: liveRef.current.loafScripts }) : null;
+      if (baseVals.length < 4) { setLoop({ running: false, error: 'baseline 不足(需 ≥4 个交互)——先在页面产生几次交互' }); return; }
+      if (!event) { setLoop({ running: false, error: '未采到 INP 事件——触发一次慢交互再运行' }); return; }
+      setLoop({ running: true, iter: 0, current: null, result: null, error: null });
+      const adapter = HL.buildAdapter({ event, baselineValues: baseVals, getLiveInteractions: () => (liveRef.current?.interactions || []), maxIters: 5 });
+      const result = await HL.runHealLoop(Object.assign({}, adapter, {
+        onProgress: (it) => setLoop((p) => (p && p.running) ? { ...p, iter: it.i + 1, current: it } : p),
+      }));
+      setLoop({ running: false, iter: result.iterations.length, result, baseline: baseVals });
+    };
+
     // 因果统计验证:patch apply 后用 content.js 采集的真实 INP 裁决。treated 攒够 need → Welch t;
-    // accepted → 保留(默认);非 accepted → 自动回滚(回滚未显著改善的 patch)。local-first,无 Node/Playwright。
+    // patch 默认保留(会话内有效);裁决仅作证据展示,由用户决定「保留」或「撤回」。local-first,无 Node/Playwright。
     React.useEffect(() => {
       if (!causal || causal.phase !== 'collecting') return;
       const treated = (live?.interactions || []).filter((i) => (i.time || 0) > causal.applyTime).map((i) => i.value).filter((v) => v > 0);
@@ -139,36 +163,71 @@
       }
     }, [live?.interactions]);
 
-    const tplMeta = { debounce_handler: { scope: 'EventTarget.addEventListener (click/input/key)', strategy: 'Handler 防抖' }, throttle_third_party: { scope: '跨域 <script> 插入', strategy: '第三方节流' }, lazy_load: { scope: 'img / iframe', strategy: '懒加载' }, memo_wrap: { scope: 'React 组件', strategy: 'Memo 提示' }, inject_cleanup: { scope: 'useEffect', strategy: 'Cleanup 提示' } };
-
     return el('div', { style: { display: 'flex', flexDirection: 'column', gap: 9 } },
       // Banner
       el(Card, { stroke: 'var(--good)', bg: 'var(--good-soft)', pad: 10, gap: 6,
-        head: el(Head, { icon: 'shield-check', iconFill: 'var(--good)', title: '模板化自愈 · 可逆 · 30m 自动回滚' }) },
-        el(Txt, { content: '白名单预编译模板，注入后持续采 INP 对比；每个 heal 带 rollback token，到期自动失效。零动态代码执行。', size: 9.5, fill: 'var(--fg-2)', wrap: true, width: '100%', lh: 1.5, grow: true }),
+        head: el(Head, { icon: 'shield-check', iconFill: 'var(--good)', title: '自愈 · 领域专家 Checklist + 可逆 patch' }) },
+        el(Txt, { content: '本领域常见根因 → 专业解法清单。带「试用」= 会话内可逆运行时 patch(刷新失效,仅 INP 域);带「MR 草稿」= 源码方案;其余为改源码/架构方向。点「撤回」即时还原。', size: 9.5, fill: 'var(--fg-2)', wrap: true, width: '100%', lh: 1.5, grow: true }),
       ),
-      // Proof
-      el(Card, { icon: 'chart-line', title: '证明 Proof · 注入前后对比', meta: baseline ? '基线 ' + baseline.toFixed(0) + 'ms' : '未采到', gap: 8 },
+      // Proof(仅 INP 域:依赖 INP 三段 + causal 验证)
+      domain === 'inp' && el(Card, { icon: 'chart-line', title: '证明 Proof · 注入前后对比', meta: baseline ? '基线 ' + baseline.toFixed(0) + 'ms' : '未采到', gap: 8 },
         Row({ gap: 1, fill: true, style: { background: 'var(--border)', borderRadius: 4, overflow: 'hidden' } },
           el(Stat, { label: '当前 INP', value: baseline ? baseline.toFixed(0) : '—', unit: baseline ? 'ms' : '', tone: baseline ? tone(baseline) : 'fg', meta: '实时' }),
           el(Stat, { label: '已注入', value: appliedTokens.length, unit: '个', tone: 'accent', meta: '活跃模板' }),
-          el(Stat, { label: '回滚窗口', value: String((settings && settings.autoRollbackMin) || 30), unit: 'min', tone: 'good', meta: '自动失效' }),
+          el(Stat, { label: '撤回方式', value: '手动', unit: '', tone: 'good', meta: '会话内有效' }),
         ),
       ),
-      // Strategy
-      el(Card, { icon: 'wand-sparkles', title: `策略 · 模板白名单 · ${templates.length} 个`, gap: 7 },
-        templates.map((t) => { const m = tplMeta[t.id] || {}; const applied = appliedTokens.some((a) => a.templateId === t.id); return Row({ key: t.id, gap: 8, align: 'center', pad: 8, bg: 'var(--surface-2)', radius: 4, fill: true },
-          Col({ gap: 1, fill: true },
-            el(Txt, { content: t.label, size: 11, weight: 600, fill: 'var(--fg)' }),
-            el(Txt, { content: t.desc, size: 9.5, fill: 'var(--fg-3)' }),
-            el(Txt, { content: '→ ' + t.hint, size: 9, fill: 'var(--accent)' }),
-          ),
-          el(Btn, { label: busy === t.id ? '注入中...' : applied ? '已注入' : '试用', icon: applied ? 'circle-check' : 'wand-sparkles', onClick: () => apply(t.id), disabled: busy === t.id || applied, fill: false, size: 10, weight: 600 }),
-        ); }),
+      // 自愈 Loop(主引擎,仅 INP 域——测真实 INP treated):定位→生→apply→测→优秀?迭代收敛;loop 结束人决定 MR
+      domain === 'inp' && el(Card, { icon: 'loader-circle', iconFill: 'var(--accent)', title: '自愈 Loop · 定位→生→apply→测→优秀?',
+        meta: loop?.running ? '迭代 ' + loop.iter + '/5' : (loop?.result ? (loop.result.outcome === 'excellent' ? '已收敛' : '未收敛') : '待运行'), gap: 7 },
+        el(Txt, { content: '①定位瓶颈 →②生成候选 patch(源码diff+运行时代理) →③apply →④Welch t 验证 →⑤优秀?没到则重新定位再来,直至优秀或候选耗尽。loop 结束后人决定提 MR。', size: 9.5, fill: 'var(--fg-2)', wrap: true, width: '100%', lh: 1.5, grow: true }),
+        el(Btn, { label: loop?.running ? '运行中…(' + loop.iter + '/5 · 请继续浏览产生交互)' : '运行自愈 Loop', icon: 'loader-circle', onClick: runLoop, disabled: !!loop?.running, fill: true, size: 10, weight: 600 }),
+        loop?.error && el(Txt, { content: '✗ ' + loop.error, size: 9.5, fill: 'var(--bad)', wrap: true, width: '100%' }),
+        loop?.running && loop?.current && el(Txt, { content: '当前候选: ' + loop.current.candidate.label + ' · 采 treated ' + (loop.current.treated?.length || 0) + '/6', size: 9, fill: 'var(--fg-3)', wrap: true, width: '100%' }),
+        loop?.result && el('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+          (loop.result.iterations || []).filter((it) => it.phase === 'iterated').map((it, idx) =>
+            Row({ key: idx, gap: 7, align: 'center', pad: '5px 7px', bg: 'var(--surface-2)', radius: 4, fill: true, stroke: it.excellent ? 'var(--good)' : undefined },
+              el(Dot, { tone: it.excellent ? 'good' : 'fg-3', size: 6 }),
+              el(Txt, { content: '#' + (it.i + 1) + ' ' + it.candidate.label, size: 9.5, fill: 'var(--fg-2)', grow: true }),
+              el(Txt, { content: it.verdict && it.treated.length ? Math.round(meanOf(it.treated)) + 'ms · p=' + it.verdict.pValue.toFixed(2) : (it.error || '样本不足'), mono: true, size: 9, fill: it.excellent ? 'var(--good)' : 'var(--fg-3)' }),
+            )),
+          loop.result.outcome === 'excellent' && loop.result.winner
+            ? el('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, padding: 7, background: 'var(--good-soft)', border: '1px solid var(--good)', borderRadius: 4 } },
+                el(Txt, { content: '✓ 收敛到优秀 · winner: ' + loop.result.winner.label + (loop.result.winner.semantic ? '(语义类·代理近似,真 patch 需模型确认)' : '(机械类·代理≡源码效果)'), size: 10, weight: 600, fill: 'var(--good)', wrap: true, width: '100%' }),
+                el(Txt, { content: 'baseline ' + Math.round(loop.result.evidence.baselineMean) + 'ms → treated ' + Math.round(loop.result.evidence.treatedMean) + 'ms · effect ' + Math.round(loop.result.evidence.verdict.effectSize) + 'ms · p=' + loop.result.evidence.verdict.pValue.toFixed(3), mono: true, size: 9, fill: 'var(--fg-2)', wrap: true, width: '100%' }),
+                el(Txt, { content: 'MR 由你决定(提交权属于人):', size: 9, fill: 'var(--fg-3)' }),
+                loop.result.winner.sourceDiff
+                  ? el('pre', { style: { background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 4, padding: 6, fontSize: 9.5, fontFamily: 'var(--font-mono)', color: 'var(--fg-2)', margin: '4px 0', whiteSpace: 'pre', overflow: 'auto', maxHeight: 120 } }, (loop.result.winner.sourceDiff.diff || []).join('\n'))
+                  : el(Txt, { content: '(该候选无源码 diff 模板)', size: 9, fill: 'var(--fg-3)' }),
+                el(Actions, { primary: '提 MR(复制 diff)', primaryIcon: 'git-pull-request-arrow', onPrimary: () => { try { navigator.clipboard && navigator.clipboard.writeText((loop.result.winner.sourceDiff && loop.result.winner.sourceDiff.diff || []).join('\n')); } catch {} }, ghost: '不提,关闭', ghostIcon: 'x', onGhost: () => setLoop(null) }),
+              )
+            : el(Txt, { content: '✗ 候选耗尽,未达优秀(可能需要语义类 patch/模型,或瓶颈不在模板覆盖范围)', size: 9.5, fill: 'var(--warn)', wrap: true, width: '100%' }),
+        ),
       ),
-      // Scope
-      el(Card, { icon: 'target', title: '作用域 · 影响范围', gap: 6 },
-        templates.map((t) => { const m = tplMeta[t.id] || {}; return el(KV, { key: t.id, k: t.label, v: m.scope || '—' }); }),
+      // 专家 Checklist(本领域常见根因 → 解法;运行时模板/MR 草稿只是其中可落地的动作)
+      el(Card, { icon: 'search-code', iconFill: 'var(--accent)', title: `${domainLabel} 专家 Checklist · 常见问题 → 解法`, meta: `${items.length} 条`, gap: 7 },
+        el(Txt, { content: '每条 = 常见问题 → 为什么 → 专业解法。带「试用」= 会话内可逆运行时 patch;带「MR 草稿」= 有源码方案。', size: 9.5, fill: 'var(--fg-3)', wrap: true, width: '100%', lh: 1.5, grow: true }),
+        items.map((it) => {
+          const km = KIND_META[it.kind] || { label: it.kind, tone: 'fg-3' };
+          const applied = !!it.healId && appliedTokens.some((a) => a.templateId === it.healId);
+          return Row({ key: it.id, gap: 8, align: 'flex-start', pad: 8, bg: 'var(--surface-2)', radius: 4, fill: true, stroke: applied ? 'var(--good)' : undefined },
+            Col({ gap: 2, fill: true },
+              Row({ gap: 6, align: 'center' },
+                el(Pill, { tone: km.tone, label: km.label, size: 8 }),
+                el(Txt, { content: it.title, size: 11, weight: 600, fill: 'var(--fg)', grow: true, wrap: true, width: '100%' }),
+              ),
+              el(Txt, { content: it.why, size: 9.5, fill: 'var(--fg-3)', wrap: true, width: '100%', lh: 1.45 }),
+              el(Txt, { content: '→ ' + it.fix, size: 9.5, fill: 'var(--accent)', wrap: true, width: '100%', lh: 1.45 }),
+              it.evidence && el(Txt, { content: '证据 · ' + it.evidence, mono: true, size: 8.5, fill: 'var(--info)' }),
+            ),
+            // 右侧动作:运行时可注入 → 试用;否则 MR 草稿 chip;纯知识条无按钮
+            it.healId
+              ? el(Btn, { label: busy === it.healId ? '注入中...' : applied ? '已注入' : '试用', icon: applied ? 'circle-check' : 'wand-sparkles', onClick: () => apply(it.healId), disabled: busy === it.healId || applied, fill: false, size: 10, weight: 600 })
+              : it.mrId
+                ? el(Pill, { tone: 'info', label: 'MR 草稿', size: 8.5 })
+                : null,
+          );
+        }),
       ),
       // Timeline
       appliedTokens.length > 0 && el(Card, { icon: 'git-branch', title: `注入时间线 · ${appliedTokens.length} 个`, gap: 6 },
@@ -337,8 +396,7 @@
         ),
       ),
       el(Card, { icon: 'shield-check', iconFill: 'var(--good)', title: '自愈策略 · Heal Policy', gap: 6 },
-        Num('自动回滚 (分钟)', '注入后到期自动失效', 'autoRollbackMin', 1, 1440, 1),
-        el(Txt, { content: '仅白名单预编译模板生效；禁止任意 eval / 动态代码执行。', size: 9.5, fill: 'var(--fg-3)', wrap: true, width: '100%', grow: true }),
+        el(Txt, { content: '注入后默认保留至页面卸载，点「撤回」即时还原；仅白名单预编译模板生效，禁止任意 eval / 动态代码执行。', size: 9.5, fill: 'var(--fg-3)', wrap: true, width: '100%', grow: true }),
       ),
       el(Card, { icon: 'file-code', iconFill: 'var(--accent)', title: 'Source Map · 根因源码还原', gap: 6 },
         Row({ gap: 8, align: 'center', pad: '8px 10px', bg: 'var(--surface-2)', stroke: 'var(--border)', radius: 5 },

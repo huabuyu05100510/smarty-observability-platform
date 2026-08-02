@@ -31,3 +31,29 @@ jobs:
         run: pnpm test
       - name: security-check
         run: pnpm security-check
+
+  extension-verify:
+    name: extension · verify loop + units
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: platform/extension/verify/package-lock.json
+      # verify/ 是独立 npm(刻意不进 smarty pnpm workspace),故单独 npm ci。
+      # 依赖 platform/extension/verify/{package.json,package-lock.json} 已提交。
+      - name: install (extension verify · 独立 npm)
+        working-directory: platform/extension/verify
+        run: npm ci
+      # loop.verify.mjs 用 playwright 起 Chromium,需单独下载浏览器(units 纯 Node 不需要)。
+      - name: install playwright chromium
+        working-directory: platform/extension/verify
+        run: npx playwright install --with-deps chromium
+      - name: units · causal/sourcemap 已知答案(纯 Node)
+        working-directory: platform/extension/verify
+        run: node units.verify.mjs
+      - name: verify · heal-loop 控制流收敛(Playwright/Chromium)
+        working-directory: platform/extension/verify
+        run: node loop.verify.mjs

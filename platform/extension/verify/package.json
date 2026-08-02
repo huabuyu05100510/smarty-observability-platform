@@ -1,0 +1,15 @@
+{
+  "name": "vc-loop-verify",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vitals Copilot 自愈 loop 收敛验证 — 独立 npm,不进 smarty pnpm workspace。Playwright 起 Chromium,页面注入真实 causal.js + heal-loop.js,喂合成 measure,断言控制流收敛/诚实。",
+  "scripts": {
+    "units": "node units.verify.mjs",
+    "verify": "node loop.verify.mjs",
+    "test": "node units.verify.mjs && node loop.verify.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}

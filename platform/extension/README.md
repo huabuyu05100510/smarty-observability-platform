@@ -115,7 +115,7 @@ extension/
 
 - 纯静态、**无构建**：改完 JS 直接在 `chrome://extensions` 点扩展卡上的「刷新」即可。
 - UI 全 `React.createElement`（vendored UMD，无打包），样式用 `:root` CSS 变量。
-- 图标生成：`node tools/gen-icons.mjs icons/`（puppeteer 渲染 SVG；脚本见仓库）。
+- 图标：应用图标 `icons/icon-{16,32,48,128}.png` 已预生成入库；UI 内联图标见 `icons.js`（lucide，MV3 CSP 合规不连 CDN）。
 - 字体：自托管 Geist / Geist Mono（`fonts/`，fontsource）。
 
 ## 已知限制

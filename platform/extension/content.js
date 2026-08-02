@@ -225,7 +225,7 @@
       for (const e of list.getEntries()) {
         vitals.lcp = e.startTime; vitals.lcpElement = descEl(e.element); vitals.lcpUrl = e.url || ''; vitals.lcpSize = e.size || 0;
         // 实时 resLoad:资源若尚未加载完 → getEntriesByName 取不到 → null 降级(终值仍由 finalize 落盘)
-        if (e.url) { const r = performance.getEntriesByName(e.url).pop(); vitals.resLoad = r ? r.duration : null; }
+        if (e.url) { const r = performance.getEntriesByName(e.url).pop(); if (r) { vitals.resLoad = r.duration; vitals.resStart = r.startTime; vitals.resEnd = r.responseEnd; } else { vitals.resLoad = null; } }
         pushVital();
       }
     });
@@ -259,9 +259,9 @@
     try {
       if (vitals.lcp != null) {
         const t = ttfbOf() || {};
-        let resLoad = 0;
-        if (vitals.lcpUrl) { const r = performance.getEntriesByName(vitals.lcpUrl).pop(); if (r) resLoad = r.duration; }
-        persistVital('lcp', vitals.lcp, { ttfb: t.ttfb ?? vitals.ttfb, resLoad, element: vitals.lcpElement, url: vitals.lcpUrl, navType: t.navType || vitals.navType });
+        let resLoad = 0, resStart = null, resEnd = null;
+        if (vitals.lcpUrl) { const r = performance.getEntriesByName(vitals.lcpUrl).pop(); if (r) { resLoad = r.duration; resStart = r.startTime; resEnd = r.responseEnd; } }
+        persistVital('lcp', vitals.lcp, { ttfb: t.ttfb ?? vitals.ttfb, resLoad, resStart, resEnd, element: vitals.lcpElement, url: vitals.lcpUrl, navType: t.navType || vitals.navType });
       }
       if (vitals.cls > 0) persistVital('cls', vitals.cls, { shifts: vitals.shifts.slice(0, 8), largest: vitals.shifts.reduce((m, s) => Math.max(m, s.value), 0), element: vitals.shifts[0] && vitals.shifts[0].source });
     } catch {}
@@ -269,41 +269,29 @@
   window.addEventListener('pagehide', finalize, { once: true });
   window.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') finalize(); }, { once: true });
 
-  // 错误捕获 → IndexedDB
-  // 注意:资源(img/script/link/iframe)加载失败的 ErrorEvent 是 message="" + error=null,
-  // 必须先判资源分支,否则会被 `!e.error && !e.message` 守卫提前 return 掉(资源错误永远采不到)。
-  const RESOURCE_TAGS = ['img', 'script', 'link', 'iframe'];
-  window.addEventListener('error', (e) => {
-    const t = e.target;
-    const isResource = t && t.tagName && RESOURCE_TAGS.includes(t.tagName.toLowerCase());
-    if (!e.error && !e.message && !isResource) return;
-    if (isResource) {
-      const tag = t.tagName.toLowerCase();
+  // 错误捕获:MAIN world 嗅探器(error-sniffer.js, manifest world:'MAIN')拿完整 error.stack 后
+  // 经 window.postMessage 回传到这里。content script 跑在 isolated world,直接 addEventListener('error')
+  // 收不到页面 main world 抛的 JS 错误(Chromium #41157066),故捕获下沉到 MAIN world 再桥接回来。
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.__vc !== 'err') return;
+    const p = e.data.payload || {};
+    const ts = p.time || Date.now();
+    if (p.subType === 'resource') {
       sendEvent({
-        eventId: eventId(), host, route, origin, timestamp: Date.now(),
+        eventId: eventId(), host, route, origin, timestamp: ts,
         sessionId: sessId, release,
         type: 'error', subType: 'resource', ua: UA,
-        message: 'Failed ' + tag + ': ' + (t.src || t.href), sourceURL: t.src || t.href,
+        message: p.message, sourceURL: p.sourceURL,
       });
       return;
     }
     const ev = {
-      eventId: eventId(), host, route, origin, timestamp: Date.now(),
+      eventId: eventId(), host, route, origin, timestamp: ts,
       sessionId: sessId, release,
-      type: 'error', subType: 'js', ua: UA,
-      message: e.message, stack: e.error?.stack, filename: e.filename, lineno: e.lineno, colno: e.colno,
+      type: 'error', subType: p.subType || 'js', ua: UA,
+      message: p.message, stack: p.stack, filename: p.filename, lineno: p.lineno, colno: p.colno,
     };
-    const frames = e.filename ? [{ url: e.filename, line: e.lineno, col: e.colno }, ...parseStackFrames(e.error && e.error.stack)] : parseStackFrames(e.error && e.error.stack);
+    const frames = p.filename ? [{ url: p.filename, line: p.lineno, col: p.colno }, ...parseStackFrames(p.stack)] : parseStackFrames(p.stack);
     captureError(ev, frames);
-  }, true);
-
-  window.addEventListener('unhandledrejection', (e) => {
-    const r = e.reason;
-    captureError({
-      eventId: eventId(), host, route, timestamp: Date.now(),
-      sessionId: sessId, release,
-      type: 'error', subType: 'promise', ua: UA,
-      message: r?.message ?? String(r), stack: r?.stack,
-    }, parseStackFrames(r && r.stack));
   });
 })();

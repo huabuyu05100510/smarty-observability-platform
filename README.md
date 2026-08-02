@@ -8,6 +8,8 @@
 
 调研依据见 `monitors/docs/前端可观测自愈平台-最佳实践校验报告-2026-07-28.md`。
 
+> **→ 30 秒零安装体验**：浏览器扩展 **Vitals Copilot**（[`platform/extension`](platform/extension)）—— 任意网页采集 INP/LCP/FCP/CLS + 错误 + 自愈引擎现场版，`chrome://extensions` load-unpacked 即用，无 build、无 pnpm、无后端。详见下文「浏览器扩展」专节。
+
 ---
 
 ## 为什么造这个
@@ -25,6 +27,32 @@
 - **确定性规则引擎**（`@monit/diagnose`）做可解释归因，LLM 只做规则做不到的；
 - **对抗式 Verifier + 信心门禁**（`@monit/repair-agent`）防 AI 幻觉、防"通过测试但未修复"；
 - **双轨交付**（`@monit/coordinator`）：运行时热修（可逆，治标）+ MR 草稿（永久，治本），均人审兜底。
+
+---
+
+## 浏览器扩展 · Vitals Copilot（30 秒零安装入口 + 自愈引擎现场版）
+
+> 任意网页**零集成**采集 **INP / LCP / FCP / CLS + JS 错误** → 归因 → 模板化自愈 → 因果统计验证 → MR 草稿。
+> **数据全本地 IndexedDB，零后端、不外发。** Chrome/Edge MV3，load-unpacked 即用。
+> 这是整套方法论最易上手的入口，也是 `@monit/repair-agent` 自愈引擎的 **local-first 浏览器现场版**（同一套 diagnose→verify→gate 方法论，测量来自真实页面交互、gate 由人决定）。
+
+| 信号 | 采集 | 根因归因（对齐官方模型） | 自愈 |
+|---|---|---|---|
+| **INP** | Event Timing + LoAF | 三段：Input Delay / Processing / Presentation | debounce · throttle · cleanup（+ Welch t 验证） |
+| **LCP** | LCP + 资源时序 | **四段**：TTFB / Load **Delay** / Load **Time** / Render Delay | preload · defer · font（MR 草稿） |
+| **FCP** | Paint + Nav Timing | 三段：TTFB / 解析 / 阻塞 | defer（MR 草稿） |
+| **CLS** | Layout Shift `sources[]` | 来源类：media / font / dom | size · font-display（MR 草稿） |
+| **错误** | onerror / rejection / 资源 | 分类 + **零依赖 sourcemap 还原**（VLQ+mappings） | optional-chaining · await · chunk-retry（MR 草稿） |
+
+**自愈引擎（与平台同方法论，纯前端零依赖）**：
+
+- **域通用 localize 路由器**（`localize.js`）：5 信号全部对齐官方归因模型（[web.dev/optimize-inp](https://web.dev/articles/optimize-inp) 三段、[optimize-lcp](https://web.dev/articles/optimize-lcp) 四段、CLS 罪魁来源），输出「主导维度 → 解法族」。纯函数，37 项单测覆盖。
+- **自愈 loop**（`heal-loop.js`）：定位 → 生成候选 → apply → **Welch t 因果验证**（`causal.js`，Lanczos log-Γ + Lentz 连分式，非 toy）→ 没到优秀就**重新定位再来**（追"相位迁移"交互效应）。DI 纯核心 + adapter，5 项 Playwright 控制流验证。
+- **领域专家 Checklist**（`checklist.js`）：每域「常见根因 → 为什么 → 专业解法」，运行时模板/MR 草稿挂在可落地条目上。
+- **闭环已打通**：扩展 apply patch → `content.js` 采真实 INP → Welch t 裁决 → **默认保留 / 手动撤回**（human-in-the-loop），全程浏览器内、无 Node/Playwright = local-first 正确闭环。
+
+**安装**：`chrome://extensions` → 开启「开发者模式」→「加载已解压」→ 选 `platform/extension/`。
+详见 [`platform/extension/README.md`](platform/extension/README.md) · 自愈架构正本 [`platform/extension/docs/heal-tournament.md`](platform/extension/docs/heal-tournament.md)（测量隔离原理 + 并行 tournament 设计，引行业规范）。
 
 ---
 

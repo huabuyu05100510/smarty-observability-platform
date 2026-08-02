@@ -1,6 +1,6 @@
 # Privacy Policy — Vitals Copilot
 
-**Effective date: 2026-07-31 · Language: 中文 / English**
+**Effective date: 2026-08-02 · Language: 中文 / English**
 
 Vitals Copilot 是一个**纯本地**的前端可观测工具。它不收集、不上传、不外发任何用户数据。
 
@@ -19,9 +19,8 @@ Vitals Copilot 是一个**纯本地**的前端可观测工具。它不收集、�
 | `scripting` | 在目标页执行自愈模板（`world: MAIN`，prototype patch）与采集自检；按需注入，非持续。 |
 | `sidePanel` | 提供侧边栏调试面板 UI。 |
 | `storage` | 在 service worker 里缓冲事件（抗 SW 终止），供侧栏打开时落盘到 IndexedDB。 |
-| `alarms` | 调度自愈 patch 的定时自动回滚（`chrome.alarms`，抗 SW 终止；到点对注入时的 tab rollback，失败即随页面卸载自然失效）。 |
 
-**不申请**：`tabs` 历史、`cookies`、`webRequest` 拦截、`<all-sites>` 持久后台、身份/账密、付费 API 等任何敏感权限。
+**不申请**：`alarms`、`tabs` 历史、`cookies`、`webRequest` 拦截、`<all-sites>` 持久后台、身份/账密、付费 API 等任何敏感权限。
 
 ## Self-heal caveat · 自愈说明
 「模板化自愈」会在**当前页面**以 `world: MAIN` 注入预编译的 prototype patch（如给事件 listener 加 debounce）。这些 patch **仅影响当前标签页的运行时**、刷新即失效，且不修改任何文件/网络。属于实验性功能，可能影响页面行为——可在设置中关闭/不使用。

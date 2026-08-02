@@ -112,12 +112,26 @@
     },
   };
   // ---- 真实拆解 / 规则 helper（字段缺失即降级，绝不伪造占比）----
+  // 官方四段(web.dev/optimize-lcp):TTFB / Resource Load Delay / Resource Load Time / Element Render Delay。
+  // 需 resStart/resEnd(新版采集);旧数据只有 resLoad → 降级三段(Delay/Time 未细分)。
   function lcpSegs(e) {
-    const v = e.value || 0; const ttfb = e.ttfb, res = e.resLoad;
+    const v = e.value || 0; const ttfb = e.ttfb;
+    if (e.resStart != null && e.resEnd != null) {
+      const loadDelay = Math.max(0, (e.resStart || 0) - (ttfb || 0));
+      const loadTime = Math.max(0, (e.resEnd || 0) - (e.resStart || 0));
+      const renderDelay = Math.max(0, v - (e.resEnd || 0));
+      return [
+        { label: 'TTFB 首字节', value: ttfb || 0, color: 'info' },
+        { label: '资源加载延迟·可发现性', value: loadDelay, color: 'accent' },
+        { label: '资源加载耗时·传输', value: loadTime, color: 'bad' },
+        { label: '元素渲染延迟', value: renderDelay, color: 'warn' },
+      ];
+    }
+    const res = e.resLoad;
     if (ttfb == null && res == null) return [{ label: 'LCP 总值(分段时序未采集)', value: v, color: 'fg-3' }];
     return [
       { label: 'TTFB 首字节', value: ttfb || 0, color: 'info' },
-      { label: '资源加载', value: res || 0, color: 'bad' },
+      { label: '资源加载(延迟/耗时未细分)', value: res || 0, color: 'bad' },
       { label: '其余(渲染/阻塞)', value: Math.max(0, v - (ttfb || 0) - (res || 0)), color: 'warn' },
     ];
   }
@@ -517,13 +531,16 @@
     const out = [];
     const push = (kind, conf, evidence, tags, heal) => out.push({ kind: signal + '.' + kind, confidence: conf, evidence, tags, suggestedHealIds: heal });
     if (signal === 'lcp') {
-      const hasRes = ev.resLoad != null, hasTtfb = ev.ttfb != null;
-      if (hasRes && ev.resLoad > 1500) push('slow_resource', Math.min(0.92, 0.55 + ev.resLoad / 6000), [`LCP 资源加载 ${fmtSig('lcp', ev.resLoad)} 偏长`, ev.url ? `主资源 ${shortFile(ev.url)} 加载 ${fmtSig('lcp', ev.resLoad)}` : '未捕获资源 URL', '建议 <link rel=preload> + 优先级'], [{ label: 'slow-resource', tone: 'bad' }, { label: shortFile(ev.url), tone: 'info' }], ['preload_lcp']);
-      if (hasTtfb && ev.ttfb > 800) push('slow_ttfb', Math.min(0.8, 0.5 + ev.ttfb / 4000), [`TTFB ${fmtSig('lcp', ev.ttfb)} 偏长`, '边缘/源站响应慢(需排查 CDN/源站)'], [{ label: 'slow-ttfb', tone: 'warn' }], ['defer_css']);
-      if (hasRes || hasTtfb) {
-        const block = Math.max(0, v - (ev.resLoad || 0) - (ev.ttfb || 0));
-        push('render_block', Math.min(0.7, 0.45 + block / 4000), [`渲染阻塞等占比约 ${v > 0 ? (block / v * 100).toFixed(0) : '?'}%`, '首屏关键 CSS 内联 + 其余 defer'], [{ label: 'render-block', tone: 'warn' }], ['defer_css']);
-      }
+      // 官方四段对齐:load delay(可发现性)/ load time(传输)/ render delay 分开,解法族不同。
+      const hasTtfb = ev.ttfb != null;
+      const hasFour = ev.resStart != null && ev.resEnd != null;
+      const loadDelay = hasFour ? Math.max(0, ev.resStart - (ev.ttfb || 0)) : null;
+      const loadTime = hasFour ? Math.max(0, ev.resEnd - ev.resStart) : (ev.resLoad != null ? ev.resLoad : null);
+      const renderDelay = hasFour ? Math.max(0, v - ev.resEnd) : ((ev.ttfb != null || loadTime != null) ? Math.max(0, v - (ev.ttfb || 0) - (loadTime || 0)) : null);
+      if (hasTtfb && ev.ttfb > 800) push('slow_ttfb', Math.min(0.8, 0.5 + ev.ttfb / 4000), [`TTFB ${fmtSig('lcp', ev.ttfb)} 偏长`, '边缘/源站响应慢(需排查 CDN/源站/重定向)'], [{ label: 'slow-ttfb', tone: 'warn' }], []);
+      if (loadDelay != null && loadDelay > 300) push('resource_load_delay', Math.min(0.92, 0.55 + loadDelay / 2000), [`资源加载延迟 ${fmtSig('lcp', loadDelay)}(可发现性低)`, 'preload scanner 未发现 / JS 注入 / 误 lazy / 跨域', '<link rel=preload fetchpriority=high> + 首屏图勿 lazy + 同源'], [{ label: 'load-delay', tone: 'accent' }, { label: shortFile(ev.url), tone: 'info' }], ['preload_lcp']);
+      if (loadTime != null && loadTime > 1500) push('slow_resource', Math.min(0.9, 0.5 + loadTime / 6000), [`资源传输 ${fmtSig('lcp', loadTime)} 偏长(大图/旧格式/未压缩/远)`, '现代格式 webp/avif + 压缩 + 图 CDN'], [{ label: 'slow-resource', tone: 'bad' }, { label: shortFile(ev.url), tone: 'info' }], []);
+      if (renderDelay != null && renderDelay > 400) push('render_block', Math.min(0.7, 0.45 + renderDelay / 4000), [`元素渲染延迟 ${fmtSig('lcp', renderDelay)}`, '渲染阻塞 CSS/JS 或客户端渲染', '内联关键 CSS + 其余 defer + SSR'], [{ label: 'render-block', tone: 'warn' }], ['defer_css']);
     } else if (signal === 'fcp') {
       const hasTtfb = ev.ttfb != null, hasParse = ev.domParse != null;
       if (hasTtfb && ev.ttfb > 800) push('slow_ttfb', Math.min(0.9, 0.55 + ev.ttfb / 4000), [`首字节 TTFB ${fmtSig('fcp', ev.ttfb)} 偏长`, '首字节响应慢(需排查 CDN/源站)'], [{ label: 'slow-ttfb', tone: 'bad' }], []);

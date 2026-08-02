@@ -7,7 +7,7 @@ const el = globalThis.el || React.createElement;
 // 版本号单源:从 manifest.json 读取(chrome.runtime.getManifest),避免 content/sidepanel/设置三处漂移。
 const VERSION = (typeof chrome !== 'undefined' && chrome.runtime?.getManifest?.().version) || '1.0.0';
 const SETTINGS_KEY = 'inp_copilot_settings';
-const DEFAULT_SETTINGS = { sampleRate: 1, loafThresholdMs: 50, autoRollbackMin: 30, alertThresholdMs: 500, backend: '', sourceMapAuto: true };
+const DEFAULT_SETTINGS = { sampleRate: 1, loafThresholdMs: 50, alertThresholdMs: 500, backend: '', sourceMapAuto: true };
 
 const TABS = {
   inp: ['实时', '根因', '自愈', 'MR', '历史', '设置'],
@@ -126,7 +126,6 @@ function App() {
     const handler = (msg) => {
       if (msg?.type === 'INP_UPDATE') setLive((p) => Object.assign({}, p, msg.payload));
       else if (msg?.type === 'EVENT_RELAY' && globalThis.__data) globalThis.__data.putEvent(msg.payload).catch(() => {});
-      else if (msg?.type === 'HEAL_AUTO_ROLLED_BACK') setAppliedTokens((p) => p.filter((t) => t.token !== msg.token));
     };
     chrome.runtime.onMessage.addListener(handler);
     chrome.runtime.sendMessage({ type: 'GET_LATEST' }, (resp) => { if (resp?.payload) setLive((p) => Object.assign({}, p, resp.payload)); });
@@ -233,7 +232,7 @@ function App() {
   if (tab === '实时' && VITALS.includes(domain)) panel = el(VitalRealtimePanel, { signal: domain, data: realtime, onAnalyze: onAnalyzeInp });
   else if (tab === '错误流') panel = el(ErrorStreamPanel, { onSelectError });
   else if (tab === '根因') panel = el(RootCauseView, { signal: domain === 'error' ? 'error' : domain, data: rca, onHeal: () => setTab('自愈'), onMr: () => setTab('MR'), onCopyStack: () => { try { navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(selectedError || live.inp || live.vitals || {}, null, 2)); } catch {} } });
-  else if (tab === '自愈') panel = el(HealPanel, { live, appliedTokens, setAppliedTokens, settings });
+  else if (tab === '自愈') panel = el(HealPanel, { domain, live, appliedTokens, setAppliedTokens });
   else if (tab === 'MR') panel = el(MrPanel, { candidates: candidatesForMr, appliedTokens });
   else if (tab === '历史') panel = el(HistoryPanel, { onClear, eventCount });
   else if (tab === '设置') panel = el(SettingsPanel, { eventCount, settings, onSave: saveSettings, onClear });
