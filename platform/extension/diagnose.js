@@ -51,22 +51,24 @@
       kind: 'inp.processing.heavy_handler',
       threshold: 50,
       match: (ev) => ev.processingDuration > 50,
-      confidence: (ev) => Math.min(0.9, 0.5 + (ev.processingDuration - 50) / 200),
-      evidence: (ev) => [
-        `processingDuration=${ev.processingDuration.toFixed(1)}ms 超阈值 50ms`,
-        `handler 同步逻辑偏重`,
-      ],
+      confidence: (ev) => { const base = Math.min(0.9, 0.5 + (ev.processingDuration - 50) / 200); const sh = scopeHeft(ev); return sh ? Math.max(0.1, Math.min(0.92, base + sh.boost)) : base; },
+      evidence: (ev) => {
+        const out = [`processingDuration=${ev.processingDuration.toFixed(1)}ms 超阈值 50ms`, `handler 同步逻辑偏重`];
+        const sh = scopeHeft(ev); if (sh && sh.note) out.push('源码核对: ' + sh.note);
+        return out;
+      },
       suggestedHealIds: () => ['debounce_handler'],
     },
     {
       kind: 'inp.presentation.layout_thrash',
       threshold: 30,
       match: (ev) => ev.presentationDelay > 30,
-      confidence: (ev) => Math.min(0.85, 0.5 + (ev.presentationDelay - 30) / 200),
-      evidence: (ev) => [
-        `presentationDelay=${ev.presentationDelay.toFixed(1)}ms 超阈值 30ms`,
-        '样式重算/布局抖动嫌疑',
-      ],
+      confidence: (ev) => { const base = Math.min(0.85, 0.5 + (ev.presentationDelay - 30) / 200); const sh = scopeHeft(ev); return (sh && sh.forcedReflow) ? Math.min(0.92, base + 0.12) : base; },
+      evidence: (ev) => {
+        const out = [`presentationDelay=${ev.presentationDelay.toFixed(1)}ms 超阈值 30ms`, '样式重算/布局抖动嫌疑'];
+        const sh = scopeHeft(ev); if (sh && sh.forcedReflow) out.push('源码核对: 循环内 querySelector(强制同步布局)');
+        return out;
+      },
       suggestedHealIds: () => ['memo_wrap', 'debounce_handler'],
     },
     {
@@ -78,6 +80,26 @@
       suggestedHealIds: () => [],
     },
   ];
+
+  // 源码核对(③b①:pre-AI 规则读源码,非纯阈值):读 resolvedScript.scope 的反模式 + 函数体,
+  // 返回同步重活 boost / 强制布局标志 / 说明。无源码 → null(规则退回纯阈值,优雅降级)。
+  function scopeHeft(ev) {
+    const scope = ev && ev.resolvedScript && ev.resolvedScript.scope;
+    if (!scope || !scope.body) return null;
+    const ap = (scope.antiPatterns || []).map((p) => p.id || p);
+    const has = (id) => ap.includes(id);
+    const loopCount = (scope.body.match(/\b(for|while|do)\b/g) || []).length;
+    const forcedReflow = has('loop_query_selector');
+    let boost = 0, note = '';
+    if (has('large_sync_loop') || has('sync_xhr') || forcedReflow) {
+      boost = 0.15; note = '函数体含同步重活(' + ap.filter((id) => ['large_sync_loop', 'sync_xhr', 'loop_query_selector'].includes(id)).join('/') + ')';
+    } else if (loopCount === 0 && scope.body.length < 300) {
+      boost = -0.1; note = '函数体未见同步重活(可能归因错帧/测量噪声)';
+    } else {
+      note = '函数体结构未见明显异常';
+    }
+    return { boost, note, forcedReflow };
+  }
 
   // 主入口: 跑所有规则,产出 candidate 链
   function analyzeRootCauses(ev) {

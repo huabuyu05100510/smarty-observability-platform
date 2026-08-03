@@ -19,6 +19,14 @@ chrome.action?.onClicked?.addListener(async (tab) => {
   } catch { /* ignore */ }
 });
 
+// chrome.debugger CDP 事件转发(内存深度分析:HeapProfiler 快照 chunk 流 → sidepanel)。
+// onEvent 只在 background 可监听;转成普通消息给 sidepanel 的 heap-profiler 收集。
+chrome.debugger?.onEvent?.addListener((src, method, params) => {
+  if (method === 'HeapProfiler.addHeapSnapshotChunk' || method === 'HeapProfiler.reportHeapSnapshotProgress') {
+    try { chrome.runtime.sendMessage({ type: 'HEAP_CDP_EVENT', method, params }).catch(() => {}); } catch {}
+  }
+});
+
 // 事件缓冲（durable，抗 SW 终止）。sidepanel 关闭时累积，打开时 flush 进 IndexedDB。
 // 串行化:get→push→set 跨 await,若并发调用会读到同一快照互相覆盖丢事件 → 单飞 promise 链排队。
 let bufferQueue = Promise.resolve();
@@ -121,6 +129,52 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const [{ result }] = await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: false }, func: (token) => globalThis.__inpHeal?.rollback(token), args: [msg.token], world: 'MAIN' });
         sendResponse(result);
       } catch (e) { sendResponse({ ok: false, reason: 'executeScript failed: ' + (e?.message || String(e)) }); }
+    })();
+    return true;
+  }
+  // 录制/重放(record-replay)中转:sidepanel → content script 的 replay.js(isolated world)
+  if (msg?.type === 'REPLAY_START_RECORD' || msg?.type === 'REPLAY_STOP_RECORD' || msg?.type === 'REPLAY_GET_RECORD' || msg?.type === 'REPLAY_RUN') {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ error: 'no active tab' }); return; }
+        chrome.tabs.sendMessage(tab.id, msg, (resp) => sendResponse(chrome.runtime.lastError ? { error: chrome.runtime.lastError.message } : resp));
+      } catch (e) { sendResponse({ error: 'replay relay failed: ' + (e?.message || String(e)) }); }
+    })();
+    return true;
+  }
+  // chrome.debugger + CDP 中转(内存深度分析)。代价:attach 时浏览器顶部显示「正在调试此标签页」提示条
+  // (CDP 强制安全提示)。仅用户点「深度分析」才 attach,日常 advisory 趋势不 attach(无提示)。
+  if (msg?.type === 'HEAP_ATTACH') {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ error: 'no active tab' }); return; }
+        await chrome.debugger.attach({ tabId: tab.id }, '1.3');
+        sendResponse({ ok: true, tabId: tab.id });
+      } catch (e) { sendResponse({ error: 'attach failed: ' + (e?.message || String(e)) }); }
+    })();
+    return true;
+  }
+  if (msg?.type === 'HEAP_DETACH') {
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) { try { await chrome.debugger.detach({ tabId: tab.id }); } catch {} }
+        sendResponse({ ok: true });
+      } catch (e) { sendResponse({ error: String(e) }); }
+    })();
+    return true;
+  }
+  if (msg?.type === 'HEAP_CDP') {
+    // 透传 CDP 命令(Performance.enable/getMetrics、HeapProfiler.enable/collectGarbage/startTrackingHeapObjects/stopTrackingHeapObjects)
+    (async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) { sendResponse({ error: 'no active tab' }); return; }
+        const result = await chrome.debugger.sendCommand({ tabId: tab.id }, msg.method, msg.params || {});
+        sendResponse({ ok: true, result });
+      } catch (e) { sendResponse({ error: (e?.message || String(e)) }); }
     })();
     return true;
   }

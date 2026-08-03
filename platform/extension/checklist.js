@@ -56,6 +56,20 @@
       { id: 'err.render_uncaught', title: '渲染期异常未兜底', why: 'React render 抛错导致整树白屏', fix: 'ErrorBoundary 包关键路由;上报 + 降级 UI', evidence: 'render 期同步错误', kind: 'code' },
       { id: 'err.reference', title: 'ReferenceError: not defined', why: '死代码引用或构建产物缺导出', fix: '检查 import/export;tree-shaking 边界;CI 构建校验', evidence: 'message 含 is not defined', kind: 'code' },
     ],
+    memory: [
+      { id: 'mem.effect_leak', title: 'useEffect / 监听未清理', why: 'SPA 组件卸载后 setInterval/addEventListener/订阅仍存活,路由切换叠加(堆随交互单调增、导航后不回落)', fix: 'useEffect return cleanup;removeEventListener;clearInterval/clearTimeout;subscription.unsubscribe()', evidence: 'no_release_on_nav 或堆随交互增长', healId: 'inject_cleanup', kind: 'code' },
+      { id: 'mem.closure_hold', title: '闭包持有大对象 / 无界缓存', why: '长期闭包(Map/数组/单例)只增不删,堆 monotonic 增长', fix: 'LRU/TTL 淘汰;WeakMap/WeakSet 持可回收键;弱引用化大对象', evidence: 'heap_growth + 快照显示某结构持续膨胀', mrId: 'weak_ref', kind: 'code' },
+      { id: 'mem.detached_dom', title: 'detached DOM 节点累积', why: '节点从文档移除但仍被 JS 引用(变量/缓存),DOM 节点数持续增长', fix: '移除后置 null;WeakRef 持有;不缓存 element 引用', evidence: 'dom_bloat(DOM 节点 +N/min)', mrId: 'weak_ref', kind: 'code' },
+      { id: 'mem.timer_storm', title: 'setInterval / setTimeout 泄漏', why: '重复注册定时器未 clear,或递归 setTimeout 卸载未停,回调持有大对象', fix: '归集定时器 ID 统一 clear;rAF 替代;卸载时 stop', evidence: '堆增长 + 定时器计数嫌疑', mrId: 'clear_timers', kind: 'code' },
+      { id: 'mem.global_accum', title: '全局 / 单例累积', why: 'window.xxx / 全局事件总线订阅只 push 不清,无界', fix: '改作用域内变量;有界队列;订阅冷热分离;定期 prune', evidence: '堆随时间稳定增长,无路由回落', kind: 'code' },
+      { id: 'mem.observer_leak', title: 'Observer 未 disconnect', why: 'Mutation/Resize/IntersectionObserver 创建多次未 disconnect', fix: '卸载时 observer.disconnect();单例化;WeakRef 关联目标', evidence: '多次进入页面后堆不回落', kind: 'code' },
+    ],
+    fps: [
+      { id: 'fps.long_task', title: '主线程长任务阻塞渲染', why: '同步 JS >50ms 抢占 rAF → 掉帧', fix: 'scheduler.yield/rAF 分片;纯计算搬 Web Worker', healId: 'debounce_handler', kind: 'code' },
+      { id: 'fps.relayout', title: '布局抖动 (layout thrash)', why: 'handler 内反复读写 DOM 几何属性触发同步 reflow', fix: '读写批量分离;改 transform/opacity 而非几何属性', kind: 'code' },
+      { id: 'fps.heavy_render', title: '渲染层/DOM 过重', why: 'DOM 节点多 / 层爆炸 / 大图未优化 → 合成慢', fix: '虚拟列表;content-visibility;减层;懒渲染', kind: 'code' },
+      { id: 'fps.no_yield', title: '长任务不让出', why: '单任务 >50ms 不切分,主线程被占', fix: '插 yield 点;scheduler.yield() 让出后续再续', kind: 'code' },
+    ],
   };
 
   // kind → { label, tone } 用于 UI chip

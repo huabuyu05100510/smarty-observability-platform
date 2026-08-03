@@ -63,9 +63,14 @@
 - `background.js` 缓冲到 `chrome.storage.local`（抗 service worker 终止）并转发 sidepanel。
 - `sidepanel`（持久页面）负责写入 IndexedDB；开屏时先 flush background 缓冲，把关闭期间累积的事件补齐。
 
-## 自愈（实验性）
+## 自愈（两档：模板 loop + AI 真自愈）
 
-「模板化自愈」在**当前页面 MAIN world** 注入预编译 prototype patch（如给 click/input/keydown listener 加 debounce、第三方 script 加 async/defer）。patch **仅影响当前标签页运行时、刷新即失效、不改文件/网络**。每个 patch 带 rollback token，可在面板回滚。详见 [PRIVACY.md](PRIVACY.md)。
+扩展自愈分两档，互补：
+
+1. **模板自愈 loop**（`heal-loop.js` + `heal-templates.js`）：在**当前页面 MAIN world** 注入预编译 prototype patch（debounce / 第三方脚本 async / 懒加载…）。loop 自动「定位 → 生候选 → apply 代理 → 采集真实 INP → Welch t 验证 → 没到优秀则换候选重定位」，统计显著改善才判「优秀」。patch **仅影响当前标签页运行时、刷新即失效、不改文件/网络**，带 rollback token 可即时撤回。详见 [PRIVACY.md](PRIVACY.md)。
+   - ⚠ 诚实局限：debounce 类 prototype patch 只包装 **apply 之后新注册** 的 listener，已注册 handler 不会被重包（多数页面 handler 在 init 期就绑完）→ 对当前页面即时效果有限。**真修请用下方「AI 真自愈」生成源码 diff**。
+
+2. **AI 真自愈**（`ai-heal.js`）：基于具体根因 + 源码，LLM 生成针对性 `search/replace` diff（非固定模板）→ 语法校验 → Verifier 对抗 → **补丁方向验证**（见下「AI 引擎」）。复制 diff 手动应用到源码。
 
 > 真·可回滚的热修（patch-registry-over-SDK + HMAC 签名）在配套的 `packages/collector` + `coordinator`，扩展侧为轻量试验场。
 
@@ -76,6 +81,23 @@
 - **dev**：bundle 带 `sourceMappingURL` 即自动还原（同源；跨域 CDN 可能被 CORS 拦截 → 自动跳过）。
 - **prod**：把 `.map` 与 bundle 同源可访问；或设置卡里关闭「自动还原」省请求。
 - 设置卡：**Source Map · 根因源码还原** 开关（默认开）。
+
+## AI 引擎 · 真根因 + 真自愈（local-first，可选）
+
+规则引擎（`diagnose.js` / `error-diagnose.js`）是**启发式分类**，模板自愈是**固定白名单**——快，但不到源码级。配置 LLM 后，扩展用 **AI 引擎**升级为「真根因 + 真自愈」：
+
+- **真根因**（`ai-rca.js`）：多 agent —— Navigator（选最有望候选）→ Diagnoser（结合 sourcemap 还原源码 + trace，生成「X 函数在 Y 场景因为 Z」级根因）→ Verifier（反事实对抗否决）→ 残差融合（确定性 × LLM；Verifier 否决 / grounding 失败降权）。封顶 0.9（不 100% 信任 LLM）。经共享 `RootCauseView` 对 **所有信号**（INP / 错误 / LCP / FCP / CLS…）可达，不限错误域。
+- **真自愈**（`ai-heal.js`）：LLM 生成针对性 `search/replace` diff → `new Function` 语法校验 → Verifier 对抗。
+- **补丁方向验证**（`heal-loop.js · runLiveProxyValidation`）：AI 补丁是**源码级**（扩展无构建环境，无法灌进线上 bundle）。若补丁能映射到最接近的**机械运行时代理**（debounce / lazy / throttle），则 apply 代理 → 采集真实 INP → Welch t → rollback，验证「修这个根因能否改善指标」的**方向**（advisory，非 diff 精确效果）。语义类补丁（memo / cleanup）诚实标注「无法运行时近似，请应用 diff 后复测」。
+- **统计裁决**（`causal.js`）：Welch t / 配对 t / CUPED / Holm-Bonferroni，诚实标注「时序前后对照非 RCT，p 值 advisory」。
+
+**local-first**：用户自带 key 存 `chrome.storage`，**只把源码片段 + trace + 现象发给 LLM 推理**，全量数据仍在本地。预设 OpenAI / ARK doubao / MiniMax / 智谱 / DeepSeek / Ollama（本地）。
+
+> 配置：侧边栏「设置 → AI 引擎」选 provider + 填 key + model，「测试连通」预检。`dev-llm-key.js`（`.gitignore`，不进仓库）可作 storage 无配置时的兜底默认；**用户在「设置」填的 key 优先**，dev key 不再静默覆盖 UI。
+
+## 分享重现 · 链接复现
+
+`share.js` 双模编码现场：**核心链接**（base64 URL fragment，含根因 + 时间窗事件 + 重放序列，几 KB~几十 KB，发链接即还原主要问题）与 **完整文件** `.vc-repro`（含堆快照 + 全事件）。`replay.js` record-replay 录制真实交互序列，patch 前/后重放同一序列 → 配对 t（消除交互间固有差异）。导入：粘链接/文件 → 「导入重现」批量灌事件 + 还原根因/重放。
 
 ## 悬浮浮层 · 压在页面之上
 
@@ -99,8 +121,14 @@ extension/
 ├── content.js             # 采集：INP/LoAF/FCP/LCP/CLS/错误 → 消息发给 background
 ├── heal-templates.js      # 5 模板（MAIN world prototype patch + rollback）
 ├── db.js                  # IndexedDB 4-store 封装（events/attributions/heals/mrs）
-├── diagnose.js            # INP 确定性根因规则引擎
+├── diagnose.js            # INP 确定性根因规则引擎（启发式）
 ├── error-diagnose.js      # 错误根因规则引擎（null_access / async_race / chunkload …）
+├── localize.js            # 域通用定位路由器（INP 三段 / LCP 四段 / CLS 来源类，对齐官方）
+├── ai-rca.js              # AI 真根因：Navigator→Diagnoser→Verifier 多 agent + 残差融合
+├── ai-heal.js             # AI 真自愈：LLM 生成 search/replace diff + Verifier + 代理映射
+├── llm-client.js          # LLM 客户端（OpenAI 兼容 + Anthropic，local-first，自带 key）
+├── causal.js              # 统计裁决（Welch t / 配对 t / CUPED / Holm-Bonferroni）
+├── share.js  replay.js    # 链接/文件现场编码 + record-replay（配对因果用）
 ├── data.js                # SIGNALS 描述符 + loadVital + 统一根因封装（local 优先）
 ├── mr-draft.js            # MR 草稿（unified diff，跨 INP/错误/vital 模板）
 ├── icons.js  ui.js        # lucide 内联图标 / 共享 UI 原子
@@ -114,6 +142,7 @@ extension/
 ## 开发
 
 - 纯静态、**无构建**：改完 JS 直接在 `chrome://extensions` 点扩展卡上的「刷新」即可。
+- **本地开发 LLM key**（可选）：`dev-llm-key.js`（已 `.gitignore`，**不进仓库**）可写死一个 key 作「storage 无配置时」的兜底默认，省去每次配置。**用户在「设置」填的 key 优先**——dev-llm-key 仅在 storage 无 apiKey 时生效，不静默覆盖 UI 配置。⚠ 若曾误提交请立即轮换该 key。
 - UI 全 `React.createElement`（vendored UMD，无打包），样式用 `:root` CSS 变量。
 - 图标：应用图标 `icons/icon-{16,32,48,128}.png` 已预生成入库；UI 内联图标见 `icons.js`（lucide，MV3 CSP 合规不连 CDN）。
 - 字体：自托管 Geist / Geist Mono（`fonts/`，fontsource）。

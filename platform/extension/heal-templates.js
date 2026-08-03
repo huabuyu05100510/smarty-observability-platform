@@ -30,7 +30,10 @@
       EventTarget.prototype.addEventListener = origAdd;
       delete window.__inpHealDebounced;
     });
-    return { ok: true, token, summary: `${types.join('/')} listener 加 ${delay}ms debounce${types.length === 1 ? '(默认仅 click;打字类事件需显式开启)' : ''}` };
+    // 诚实局限:prototype patch 只包装 apply 之后「新注册」的 listener;页面加载时已绑定的 handler 不会被重包
+    // (要重包需 removeEventListener+重新 add,这里拿不到原 fn/options/capture)。多数页面 handler 在 init 期就绑完 →
+    // 对当前页面即时效果有限,treated 常与 baseline 接近。真修需应用源码 diff(见「AI 真自愈」)。
+    return { ok: true, token, summary: `${types.join('/')} listener 加 ${delay}ms debounce${types.length === 1 ? '(默认仅 click;打字类事件需显式开启)' : ''} · ⚠仅对 apply 后新增 listener 生效,已注册 handler 不重绑` };
   }
 
   // === 模板 2: throttle_third_party ===
@@ -117,7 +120,7 @@
       return { ok: false, reason: 'token not found' };
     },
     list: () => [
-      { id: 'debounce_handler', label: 'Handler 防抖', desc: 'click 默认加 300ms debounce(input/keydown 需显式开启,避免破坏打字)', hint: '适合: processing 重' },
+      { id: 'debounce_handler', label: 'Handler 防抖', desc: 'click 默认加 300ms debounce(仅对 apply 后新增 listener;已注册 handler 不重绑 → 真修见 AI 真自愈)', hint: '适合: processing 重' },
       { id: 'throttle_third_party', label: '第三方脚本节流', desc: '跨域 script 加 async', hint: '适合: inputDelay 长 + 第三方嫌疑' },
       { id: 'lazy_load', label: '图片/iframe 懒加载', desc: '非首屏元素补 lazy(首屏/LCP 图排除)', hint: '适合: 非首屏图片/CLS 优化' },
       { id: 'memo_wrap', label: 'Memo 提示', desc: 'console.info 提示手动包 React.memo', hint: '适合: presentation 抖动' },

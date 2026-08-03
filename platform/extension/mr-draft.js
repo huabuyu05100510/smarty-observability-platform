@@ -158,6 +158,31 @@
       ],
       desc: 'img/iframe 声明 width/height + aspect-ratio，预留空间消除布局位移',
     },
+    // === 内存泄漏修复模板 ===
+    clear_timers: {
+      branch: 'memory-copilot/clear-stray-timers',
+      file: 'src/hooks/[usePolling].ts',
+      diff: [
+        '- useEffect(() => {',
+        '-   setInterval(poll, 5000);       // 未归集 ID,卸载不清 → 泄漏',
+        '- }, []);',
+        '+ useEffect(() => {',
+        '+   const id = setInterval(poll, 5000);',
+        '+   return () => clearInterval(id); // 卸载即清',
+        '+ }, []);',
+      ],
+      desc: 'setInterval 归集 ID + useEffect cleanup 清除,杜绝跨路由定时器泄漏',
+    },
+    weak_ref: {
+      branch: 'memory-copilot/weak-ref-cache',
+      file: 'src/cache/[elementCache].ts',
+      diff: [
+        '- const cache = new Map();            // 强引用:节点移除也不回收',
+        '+ const cache = new WeakMap();         // 键(Element)被 GC 即自动清',
+        '+ // 大对象叠加 WeakRef + FinalizationRegistry 主动释放',
+      ],
+      desc: '缓存改 WeakMap/WeakRef,键/值可被 GC 回收,消除 detached DOM 与闭包累积',
+    },
   };
 
   // 主入口: 根据 candidates + applied tokens 生成 MR 草稿

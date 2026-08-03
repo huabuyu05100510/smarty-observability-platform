@@ -127,6 +127,13 @@
         }
       } catch { /* 规则异常跳过 */ }
     }
+    // ③b①:源码核对 —— 顶帧有 scope 时,把函数名/反模式补进 top 候选 evidence(错误 RCA 也结合源码)
+    const rf0 = ev.resolvedFrames && ev.resolvedFrames[0];
+    if (out.length && rf0 && rf0.scope && rf0.scope.body) {
+      const ap = (rf0.scope.antiPatterns || []).map((p) => p.id || p);
+      const sym = rf0.scope.symbol ? `函数 ${rf0.scope.symbol}` : '该函数';
+      out[0].evidence = (out[0].evidence || []).concat(['源码核对: ' + sym + (ap.length ? ' 反模式 ' + ap.join('/') : ' 未见明显反模式')]);
+    }
     return out.sort((a, b) => b.confidence - a.confidence);
   }
 

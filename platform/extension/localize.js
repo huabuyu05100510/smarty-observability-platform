@@ -120,14 +120,44 @@
     };
   }
 
+  // ---- memory:泄漏嫌疑类型(非加性相位,按最严重泄漏模式归因)----
+  // 注:扩展拿不到 GC/堆快照,故按可观测的 used/limit 占比 + 堆/DOM 斜率 + 路由回落 推断泄漏类型。
+  function memory(ev) {
+    const ratio = ev && ev.ratio != null ? ev.ratio : 0;
+    const heapSlopeMB = (ev && ev.heapSlopeMB) || 0;
+    const domSlope = (ev && ev.domSlope) || 0;
+    const segs = [
+      { id: 'used', label: '已用堆 / limit', value: ratio, ratio: ratio },
+      { id: 'heap_growth', label: '堆增长斜率 MB/min', value: heapSlopeMB, ratio: Math.min(1, heapSlopeMB / 5) },
+      { id: 'dom_bloat', label: 'DOM 膨胀 节点/min', value: domSlope, ratio: Math.min(1, domSlope / 200) },
+    ];
+    let dom = 'stable';
+    if (ratio > 0.8) dom = 'near_limit';
+    else if (heapSlopeMB > 0.5) dom = 'heap_growth';
+    else if (ev && ev.noRelease) dom = 'no_release_on_nav';
+    else if (domSlope > 50 || (ev && ev.domCount > 5000)) dom = 'dom_bloat';
+    const famByDom = { near_limit: ['inject_cleanup'], heap_growth: ['inject_cleanup', 'clear_timers'], no_release_on_nav: ['inject_cleanup', 'clear_timers'], dom_bloat: ['weak_ref'], stable: [] };
+    return { signal: 'memory', dimension: 'leak', dominant: dom, segments: segs, family: famByDom[dom] || [] };
+  }
+
+  // ---- fps:渲染帧率(低帧根因:主线程长任务 / 渲染阻塞 / 布局抖动)----
+  function fps(ev) {
+    const v = (ev && ev.value) || 0;
+    const dom = v < 30 ? 'low_fps' : v < 50 ? 'marginal' : 'smooth';
+    const famByDom = { low_fps: ['debounce_handler', 'inject_cleanup'], marginal: ['debounce_handler'], smooth: [] };
+    return { signal: 'fps', dimension: 'rate', dominant: dom, segments: [{ id: 'fps', label: 'FPS', value: v, ratio: Math.min(1, v / 60) }], family: famByDom[dom] || [] };
+  }
+
   function route(signal, ev) {
     if (signal === 'inp') return inp(ev);
     if (signal === 'lcp') return lcp(ev);
     if (signal === 'fcp') return fcp(ev);
     if (signal === 'cls') return cls(ev);
     if (signal === 'error') return error(ev);
+    if (signal === 'memory') return memory(ev);
+    if (signal === 'fps') return fps(ev);
     return { signal, dimension: null, dominant: null, segments: [], family: [] };
   }
 
-  global.__localize = { route, inp, lcp, fcp, cls, error, clsBreakdown, pickDom };
+  global.__localize = { route, inp, lcp, fcp, cls, error, memory, fps, clsBreakdown, pickDom };
 })(typeof globalThis !== 'undefined' ? globalThis : self);

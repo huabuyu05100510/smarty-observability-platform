@@ -4,10 +4,13 @@
 // 当前 MVP: IndexedDB 4 store (events/attributions/heals/mrs),以 eventId 主键串联。
 (function (global) {
   const DB_NAME = 'inp-copilot';
-  const DB_VERSION = 1;
-  const STORES = ['events', 'attributions', 'heals', 'mrs'];
+  const DB_VERSION = 2;
+  const STORES = ['events', 'attributions', 'heals', 'mrs', 'replays'];
 
   // 复用单条连接:put/getAll/count/clear 每次都调 openDb,若每次新建会大量开连接(flush 时并发数百)。
+  // ⚠ version 升级(如 v1→v2 加 replays store)时,若旧 sidepanel/overlay 仍持有旧连接 → 升级被阻塞。
+  // 此前缺 onblocked 处理 → openDb Promise 永不 resolve → allEvents/putEvent 永久挂起 → 全部「加载中」+ 无数据。
+  // 修:onblocked 时 reject(清缓存允许重试,不挂起)+ onversionchange 主动关连接(让别人的升级进行)。
   let dbPromise = null;
   function openDb() {
     if (!dbPromise) {
@@ -21,7 +24,17 @@
             }
           });
         };
-        req.onsuccess = () => resolve(req.result);
+        req.onblocked = () => {
+          // 另一连接(旧 sidepanel/overlay)阻塞升级 → reject 不挂起;清缓存,旧连接关后下次 open 重试自愈
+          dbPromise = null;
+          reject(new Error('IDB versionchange blocked(另一侧栏/overlay 持有旧连接)'));
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          // 别的连接要升级 version 时,主动关闭本连接让升级进行(避免阻塞他人 → 避免 onblocked 死锁)
+          db.onversionchange = () => { try { db.close(); } catch {} dbPromise = null; };
+          resolve(db);
+        };
         req.onerror = () => { dbPromise = null; reject(req.error); }; // 失败清缓存,允许下次重试
       });
     }

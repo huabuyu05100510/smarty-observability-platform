@@ -6,8 +6,11 @@
   "description": "Vitals Copilot 自愈 loop 收敛验证 — 独立 npm,不进 smarty pnpm workspace。Playwright 起 Chromium,页面注入真实 causal.js + heal-loop.js,喂合成 measure,断言控制流收敛/诚实。",
   "scripts": {
     "units": "node units.verify.mjs",
-    "verify": "node loop.verify.mjs",
-    "test": "node units.verify.mjs && node loop.verify.mjs"
+    "loop": "node loop.verify.mjs",
+    "replay": "node replay.verify.mjs",
+    "noise": "node noise.verify.mjs",
+    "scope": "node scope.verify.mjs",
+    "test": "node units.verify.mjs && node noise.verify.mjs && node scope.verify.mjs && node loop.verify.mjs && node replay.verify.mjs && node heap.verify.mjs && node share.verify.mjs && node ai-rca.verify.mjs && node ai-heal.verify.mjs"
   },
   "dependencies": {
     "playwright": "^1.62.1"

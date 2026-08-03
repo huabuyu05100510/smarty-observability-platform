@@ -9,10 +9,13 @@
 
   // 内存缓存:启动 getAll 一次,之后所有写入经 putEvent 同步维护 cache → 高频轮询(每 2s)读内存,不再全表扫。
   let _eventsCache = null;
+  let _hostScope = null; // 域名隔离:非 null 时 allEvents/loadSessions 只返回该 host 数据,切域名不串
+  function setHostScope(host) { _hostScope = host || null; }
+  function getHostScope() { return _hostScope; }
   async function allEvents() {
-    if (_eventsCache) return _eventsCache;
-    try { _eventsCache = (await db()?.getAll('events')) || []; } catch { _eventsCache = []; }
-    return _eventsCache;
+    let evs = _eventsCache;
+    if (!evs) { try { evs = (await db()?.getAll('events')) || []; _eventsCache = evs; } catch { evs = []; } }
+    return _hostScope ? evs.filter((e) => e.host === _hostScope) : evs;
   }
   function putEvent(ev) {
     const dbApi = db();
@@ -34,6 +37,121 @@
       return { dropped };
     } catch { return { dropped: 0 }; }
   }
+  // 归因置信度反馈(👍/👎):写入 attributions store,攒数据供离线校准规则置信度(Platt/isotonic)。
+  // 当前规则 confidence 是作者拍的分段公式,未经数据校准;反馈闭环是校准的数据来源。
+  async function recordFeedback(eventId, signal, kind, feedback) {
+    const dbApi = db();
+    if (!dbApi || !dbApi.put || !eventId) return;
+    try { await dbApi.put('attributions', { eventId, signal, kind, feedback, timestamp: Date.now() }); } catch {}
+  }
+  async function getFeedback(eventId) {
+    const dbApi = db();
+    if (!dbApi || !eventId) return null;
+    try { const all = await dbApi.getAll('attributions'); return all.find((a) => a.eventId === eventId) || null; } catch { return null; }
+  }
+  async function countFeedback() {
+    const dbApi = db();
+    if (!dbApi) return { up: 0, down: 0, total: 0 };
+    try {
+      const all = await dbApi.getAll('attributions');
+      return { up: all.filter((a) => a.feedback === 'up').length, down: all.filter((a) => a.feedback === 'down').length, total: all.length };
+    } catch { return { up: 0, down: 0, total: 0 }; }
+  }
+  // heals 审计日志:apply/rollback 写 heals store,可追溯(每条用 token@action@ts 唯一 eventId,不互相覆盖)。
+  // 行业规范:自愈动作必须可审计(谁/何时/对哪个模板/做了什么)。
+  async function recordHeal(token, templateId, action, summary) {
+    const dbApi = db();
+    if (!dbApi || !dbApi.put || !token) return;
+    const ts = Date.now();
+    try { await dbApi.put('heals', { eventId: token + '@' + action + '@' + ts, token, templateId, action, summary, timestamp: ts }); } catch {}
+  }
+  async function getHeals() {
+    const dbApi = db();
+    if (!dbApi) return [];
+    try { return (await dbApi.getAll('heals')).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)); } catch { return []; }
+  }
+  // 自愈验证结果(根因的可证伪实验):patch 后因果显著改善→根因 verified;显著变差→falsified;未显著→weak。
+  // 存 attributions store(与 feedback 同 eventId,可并存)。自愈 ⟷ 根因耦合的核心:验证结果反向写回根因置信度。
+  async function recordVerification(eventId, verification) {
+    const dbApi = db();
+    if (!dbApi || !eventId) return;
+    try {
+      const all = await dbApi.getAll('attributions');
+      const existing = all.find((a) => a.eventId === eventId) || { eventId };
+      await dbApi.put('attributions', Object.assign({}, existing, { verification, verifiedAt: Date.now() }));
+    } catch {}
+  }
+  async function getVerification(eventId) {
+    const dbApi = db();
+    if (!dbApi || !eventId) return null;
+    try { const a = (await dbApi.getAll('attributions')).find((x) => x.eventId === eventId); return (a && a.verification) || null; } catch { return null; }
+  }
+  // AI 深诊结果持久化(③b②):ai-rca verdict 存 attributions store(与 verification 同 eventId 可并存)。
+  // 切 tab/重渲染后根因视图仍能回显 AI 根因 + grounding,不必重跑 LLM。
+  async function recordAiRca(eventId, verdict) {
+    const dbApi = db();
+    if (!dbApi || !dbApi.put || !eventId || !verdict) return;
+    try {
+      const all = await dbApi.getAll('attributions');
+      const existing = all.find((a) => a.eventId === eventId) || { eventId };
+      await dbApi.put('attributions', Object.assign({}, existing, { aiRca: verdict, aiRcaAt: Date.now() }));
+    } catch {}
+  }
+  async function getAiRca(eventId) {
+    const dbApi = db();
+    if (!dbApi || !eventId) return null;
+    try { const a = (await dbApi.getAll('attributions')).find((x) => x.eventId === eventId); return (a && a.aiRca) || null; } catch { return null; }
+  }
+  // 重放现场 session(P2 独立链路):录制的交互序列 + 现场快照点(堆/DOM),可回放/分享重现。
+  async function saveSession(session) {
+    const dbApi = db();
+    if (!dbApi || !dbApi.put || !session) return null;
+    session.eventId = session.eventId || ('session-' + (session.startTime || Date.now()) + '-' + Math.random().toString(36).slice(2, 6));
+    session.type = 'replay'; session.savedAt = Date.now();
+    try { await dbApi.put('replays', session); return session.eventId; } catch { return null; }
+  }
+  async function loadSessions() {
+    const dbApi = db();
+    if (!dbApi) return [];
+    try {
+      const all = await dbApi.getAll('replays');
+      const scoped = _hostScope ? all.filter((s) => s.host === _hostScope) : all;
+      return scoped.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+    } catch { return []; }
+  }
+  // P3 跨信号因果链:聚焦当前根因信号,从全事件构建关联 trace(内存→GC→INP 等)。
+  async function buildCrossSignalChain(focusSignal, focusEvent) {
+    const C = globalThis.__correlate;
+    if (!C) return null;
+    const events = await allEvents();
+    const r = C.buildChains(events, { focusSignal });
+    return (r && r.chains && r.chains.length) ? { chains: r.chains, anomalyCount: r.anomalies.length, edgeCount: r.edges.length } : null;
+  }
+  // P4 分享重现:收集现场(根因+事件+session)供编码;导入现场还原。
+  async function buildScene(rca, opts) {
+    const events = await allEvents();
+    const sessions = await loadSessions();
+    return {
+      host: (events[0] && events[0].host) || '', route: (events[0] && events[0].route) || '',
+      rootCause: rca || null,
+      events: events.slice(-200),
+      sessions: sessions.slice(0, 5),
+      heapSnapshot: (opts && opts.heapSnapshot) || null,
+      config: (opts && opts.config) || null,
+    };
+  }
+  async function importScene(scene) {
+    let ec = 0, sc = 0;
+    for (const e of (scene && scene.events || [])) {
+      try { await putEvent(Object.assign({}, e, { eventId: e.eventId || ('imported-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)), imported: true })); ec++; } catch {}
+    }
+    for (const s of (scene && scene.sessions || [])) {
+      try { await saveSession(Object.assign({}, s, { eventId: 'imported-' + (s.startTime || Date.now()) + '-' + Math.random().toString(36).slice(2, 6) })); sc++; } catch {}
+    }
+    clearEventsCache(); // 缓存失效,下次 allEvents 重读导入数据
+    return { events: ec, sessions: sc };
+  }
+
   const isInp = (e) => e && e.type !== 'error' && (e.subType === 'inp' || (e.value != null && e.inputDelay != null));
   const isErr = (e) => e && e.type === 'error';
 
@@ -110,6 +228,34 @@
       rule: (e) => ruleText('cls', 'R-02', e), ruleThreshold: 0.2,
       desc: '事件已写入 IndexedDB（状态：DETECTED），归因引擎正在采集位移指纹与 sources[] 证据。',
     },
+    memory: {
+      label: '内存', brand: 'MEMORY COPILOT', unit: 'MB', decimals: 1, scale: 1 / 1048576,
+      thr: { good: 0.5, poor: 0.8 }, budget: 0.7, // 注:memory rating 用 used/limit 比例(loadMemory 按 ratio 算),非 value 绝对值
+      heroLabel: '当前堆使用 · JS Heap',
+      verdict: (r) => r === 'good' ? 'GOOD · <50% limit' : r === 'warn' ? 'NEEDS IMPROVEMENT' : 'POOR · >80% limit',
+      bdTitle: '堆占用构成 · used / free of limit',
+      segs: (e) => memorySegs(e),
+      tgtTitle: '归因目标 · 泄漏嫌疑类型', tgtEntry: 'sample: performance.memory @ 5s',
+      tgtSelector: (e) => e.leakSuspect || '堆使用趋势', tgtComponent: (e) => e.domCount != null ? 'DOM ' + e.domCount : '—',
+      kv: (e) => [['堆增长趋势', (e.heapSlopeMB || 0) > 0.05 ? '+' + (e.heapSlopeMB || 0).toFixed(1) + ' MB/min' : '平稳/回落', (e.heapSlopeMB || 0) > 0.5 ? 'bad' : 'fg'], ['DOM 节点 / 斜率', (e.domCount || 0) + ' · ' + ((e.domSlope || 0) > 0 ? '+' : '') + (e.domSlope || 0).toFixed(0) + '/min', (e.domCount || 0) > 5000 ? 'warn' : 'fg']],
+      streamTitle: '堆采样流 · LIVE HEAP STREAM', streamMeta: '5s 采样',
+      rule: (e) => ruleText('memory', 'R-05', e), ruleThreshold: 0.8,
+      desc: '堆采样已写入 IndexedDB,泄漏检测引擎正在分析增长趋势 / 路由回落 / DOM 膨胀。',
+    },
+    fps: {
+      label: 'FPS', brand: 'FPS COPILOT', unit: 'fps', decimals: 0, scale: 1,
+      thr: { good: 50, poor: 30 }, budget: 60, // 注:fps rating 反向(高=good),rateSig 特殊处理
+      heroLabel: '当前 FPS · 每秒帧数',
+      verdict: (r) => r === 'good' ? 'GOOD · ≥50fps' : r === 'warn' ? 'NEEDS IMPROVEMENT' : 'POOR · <30fps',
+      bdTitle: 'FPS · 渲染帧率',
+      segs: (e) => [{ label: '当前 FPS', value: e.value || 0, color: (e.value || 0) >= 50 ? 'info' : (e.value || 0) >= 30 ? 'warn' : 'bad' }],
+      tgtTitle: '归因目标 · 掉帧嫌疑', tgtEntry: 'rAF frame timing',
+      tgtSelector: (e) => (e.value || 0) < 30 ? '严重掉帧(主线程/渲染阻塞)' : (e.value || 0) < 50 ? '偶发掉帧' : '流畅', tgtComponent: () => 'rAF 帧间隔',
+      kv: (e) => [['当前 FPS', String(e.value || 0), (e.value || 0) < 30 ? 'bad' : (e.value || 0) < 50 ? 'warn' : 'good'], ['目标', '60 fps', 'fg']],
+      streamTitle: 'FPS 流 · LIVE FPS STREAM', streamMeta: '1s 采样',
+      rule: (e) => ruleText('fps', 'R-06', e), ruleThreshold: 30,
+      desc: 'FPS 采样已写入 IndexedDB,掉帧分析引擎正在排查主线程长任务 / 渲染阻塞。',
+    },
   };
   // ---- 真实拆解 / 规则 helper（字段缺失即降级，绝不伪造占比）----
   // 官方四段(web.dev/optimize-lcp):TTFB / Resource Load Delay / Resource Load Time / Element Render Delay。
@@ -154,6 +300,26 @@
       { label: '动态 DOM', value: raw.dom || 0, color: 'accent' },
     ];
   }
+  // memory 段位:已用堆 vs 剩余 limit(占 limit 的构成,直观反映逼近上限程度)
+  function memorySegs(e) {
+    const used = e.value != null ? e.value : (e.used || 0);
+    const limit = e.limit || 0;
+    if (!limit) return [{ label: '堆使用(无 limit 数据)', value: used, color: 'fg-3' }];
+    return [
+      { label: '已用堆 used', value: used, color: 'bad' },
+      { label: '剩余 limit', value: Math.max(0, limit - used), color: 'info' },
+    ];
+  }
+  // 最小二乘线性回归斜率(ys 对索引);用于堆/DOM 节点趋势判定。
+  function linearSlope(ys) {
+    const n = ys.length;
+    if (n < 2) return 0;
+    const mx = (n - 1) / 2;
+    const my = ys.reduce((s, y) => s + (y || 0), 0) / n;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) { num += (i - mx) * ((ys[i] || 0) - my); den += (i - mx) ** 2; }
+    return den === 0 ? 0 : num / den;
+  }
   // 连续窗口判定:近 N 个 1 分钟窗里有多少窗出现超阈值样本 → 真实"连续 N 窗口"语义
   function checkRule(signal, mine, cfg, thresholdOverride) {
     const bins = 3, binMs = 60000, nowMs = now();
@@ -182,6 +348,7 @@
   }
   function rateSig(signal, value) {
     const c = SIGNALS[signal]; if (!c) return 'good';
+    if (signal === 'fps') return value >= c.thr.good ? 'good' : value >= c.thr.poor ? 'warn' : 'bad'; // fps 反向(高=good)
     return value <= c.thr.good ? 'good' : value <= c.thr.poor ? 'warn' : 'bad';
   }
 
@@ -206,6 +373,63 @@
     const target = cur ? { selector: cfg.tgtSelector(cur), component: cfg.tgtComponent(cur), hits: Math.round(overThresholdPct), kv: cfg.kv(Object.assign({}, cur, { hits: Math.round(overThresholdPct), sampleCount })), longTask: cur.longTask || 0 } : null;
     return { signal, cfg, cur, baseline, p75: pct(vals, 0.75), p50: pct(vals, 0.5), sampleCount, overThresholdPct, stream, target, hasData: !!cur };
   }
+  // memory 是趋势信号(非单次事件):合并 live 趋势数组 + 落盘事件,算堆/DOM 斜率 + 路由后回落。
+  async function loadMemory(live, opts) {
+    const events = await allEvents();
+    const memEv = events.filter((e) => e.type === 'vital' && e.subType === 'memory').sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    const liveSamples = (live && live.vitals && live.vitals.memory) || [];
+    const seen = new Set();
+    const samples = [];
+    const add = (s) => { const k = s.t + '-' + s.used; if (!seen.has(k)) { seen.add(k); samples.push(s); } };
+    liveSamples.forEach(add);
+    memEv.forEach((e) => add({ t: e.timestamp, used: e.value, total: e.total, limit: e.limit, domCount: e.domCount, nav: e.nav }));
+    samples.sort((a, b) => (a.t || 0) - (b.t || 0));
+    const recent = samples.slice(-40);
+    const used = recent.map((s) => s.used || 0).filter((v) => v > 0);
+    const domCounts = recent.map((s) => s.domCount || 0);
+    const latest = recent[recent.length - 1] || {};
+    const limit = latest.limit || 0;
+    const ratio = limit ? (latest.used || 0) / limit : 0;
+    const heapSlopeMB = linearSlope(recent.map((s) => s.used || 0)) * 12 / 1048576; // bytes/sample × 12 sample/min
+    const domSlope = linearSlope(domCounts) * 12; // nodes/min
+    // 路由后回落检测:最后一个 nav 标记,nav 前窗 max vs nav 后窗 min
+    let noRelease = false;
+    for (let i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].nav) {
+        const before = recent.slice(0, i).map((s) => s.used || 0).filter((v) => v > 0);
+        const after = recent.slice(i).map((s) => s.used || 0).filter((v) => v > 0);
+        if (before.length >= 2 && after.length >= 2) noRelease = Math.min.apply(null, after) >= Math.max.apply(null, before) * 0.85;
+        break;
+      }
+    }
+    let leakSuspect = '堆平稳';
+    if (ratio > 0.8) leakSuspect = '逼近 limit(紧急)';
+    else if (heapSlopeMB > 0.5) leakSuspect = '堆单调增长 +' + heapSlopeMB.toFixed(1) + 'MB/min';
+    else if (noRelease) leakSuspect = '路由切换后堆未回落';
+    else if (domSlope > 50) leakSuspect = 'DOM 节点膨胀 +' + domSlope.toFixed(0) + '/min';
+    const cfg = SIGNALS.memory;
+    // CDP 精确计数(opts.metrics,attach 后):Nodes 含 detached DOM、JSEventListeners 监听器总数、heapUsed 实时堆
+    // —— 这些 performance.memory 拿不到,是 advisory 模式无法触及的精确泄漏信号。
+    const metrics = opts && opts.metrics;
+    const cur = {
+      value: (metrics && metrics.heapUsed) || latest.used || 0,
+      used: (metrics && metrics.heapUsed) || latest.used || 0,
+      total: (metrics && metrics.heapTotal) || latest.total || 0,
+      limit,
+      domCount: (metrics && metrics.nodes != null) ? metrics.nodes : (latest.domCount || 0),
+      listeners: metrics ? metrics.listeners : undefined,
+      ratio: (metrics && metrics.heapUsed && limit) ? metrics.heapUsed / limit : ratio,
+      heapSlopeMB, domSlope, leakSuspect, noRelease,
+    };
+    return {
+      signal: 'memory', cfg, cur, samples: recent,
+      p75: pct(used, 0.75), p50: pct(used, 0.5), sampleCount: used.length,
+      overThresholdPct: used.length ? (used.filter((v) => limit && v / limit > cfg.thr.good).length / used.length * 100) : 0,
+      hasData: used.length >= 2, baseline: 0, heapSlopeMB, domSlope, ratio, leakSuspect, noRelease,
+      stream: recent.slice(-6).map((s) => ({ time: s.t, type: s.nav ? 'nav' : 'heap', value: s.used, state: limit && s.used / limit > cfg.thr.poor ? '已升级为事件' : limit && s.used / limit > cfg.thr.good ? '观察中' : '正常' })),
+      target: { selector: leakSuspect, component: cur.domCount != null ? 'DOM ' + cur.domCount : '', hits: Math.round(ratio * 100), kv: cfg.kv(cur), longTask: 0 },
+    };
+  }
   function currentFor(signal, live, mine) {
     const lv = live && live.vitals;
     const latest = mine[0];
@@ -216,6 +440,11 @@
       const shifts = (lv && lv.shifts) || (latest && latest.shifts) || [];
       const sb = clsBreakdown(shifts);
       return Object.assign({}, latest || {}, { value: (lv && lv.cls != null) ? lv.cls : (latest && latest.value), element: (shifts[0] && shifts[0].source) || (latest && latest.element), sourceBreakdown: sb, largest: (shifts.reduce((m, s) => Math.max(m, s.value), 0)) || (latest && latest.largest) || 0 });
+    }
+    if (signal === 'fps') {
+      const arr = (lv && lv.fps) || (latest ? [latest] : []);
+      const lastFps = arr.length ? arr[arr.length - 1].fps : (latest && latest.value);
+      return Object.assign({}, latest || {}, { value: lastFps });
     }
     return latest || null;
   }
@@ -296,7 +525,14 @@
     if (e.subType === 'js' || e.subType === 'promise') return 'p2';
     return 'p3';
   }
-  function fingerprint(e) { return (e.subType || 'x') + '::' + ((e.message || '').slice(0, 48)); }
+  // 权威指纹:委托 noise-gate(subType + 归一化 message + 栈顶 generated 帧;INP = target+主导段)。
+  // 降级保兼容(noise-gate 未加载时回退旧逻辑)——源端/读端共享同一指纹,分组才一致。
+  function fingerprint(e) {
+    const NG = globalThis.__noiseGate;
+    return (NG && NG.fingerprint) ? NG.fingerprint(e) : ((e.subType || 'x') + '::' + ((e.message || '').slice(0, 48)));
+  }
+  // INP 分组(同 interactionTarget+主导段 → ×N):委托 noise-gate.groupInp,输出与 groupErrors 同形。
+  function groupInp(events) { const NG = globalThis.__noiseGate; return NG && NG.groupInp ? NG.groupInp(events) : []; }
 
   function groupErrors(errs) {
     const map = new Map();
@@ -415,9 +651,29 @@
     return top ? `${top.kind} · ${top.evidence[0] || ''}` : (sample.message || '').slice(0, 80);
   }
 
+  // 自愈验证结果 → 根因置信度融合(自愈 ⟷ 根因耦合的核心)。
+  // verified(patch 显著改善)→ 上调 + 标确证;falsified(显著变差)→ 下调 + 标证伪(根因可能错);weak(未显著)→ 维持。
+  // 行业规范:根因不是「诊断完即止」,必须能被自愈实验证伪才算科学闭环(Karl Popper 可证伪性)。
+  function fuseVerification(verdict, verification) {
+    if (!verification) { verdict.verificationStatus = 'unverified'; verdict.fusedConfidence = verdict.confidence; return verdict; }
+    verdict.verification = verification;
+    if (verification.conclusion === 'accepted' && verification.significant) {
+      verdict.verificationStatus = 'verified';
+      verdict.fusedConfidence = Math.min(0.99, (verdict.confidence || 0.5) + 0.2);
+    } else if (verification.conclusion === 'rejected') {
+      verdict.verificationStatus = 'falsified';
+      verdict.fusedConfidence = Math.max(0.1, (verdict.confidence || 0.5) * 0.4);
+    } else {
+      verdict.verificationStatus = 'weak';
+      verdict.fusedConfidence = verdict.confidence;
+    }
+    return verdict;
+  }
+
   // ================= 统一根因（INP / 错误 共用 RootCauseView） =================
-  async function analyzeRootCause(signal, event) {
+  async function _analyzeRootCauseRaw(signal, event, opts) {
     if (!event) return null;
+    const _v = opts && opts.verification;
     if (signal === 'error') {
       const cands = EDIAG()?.analyzeErrorRootCauses(event) || [];
       const top = cands[0] || { kind: 'error.unknown', confidence: 0.3, evidence: ['未匹配'], tags: [], suggestedHealIds: [] };
@@ -425,7 +681,7 @@
       const sameKind = events.filter(isErr).filter((e) => fingerprint(e) === fingerprint(event));
       return {
         signal: 'error', eventId: event.eventId, sub: 'TypeError', time: event.timestamp, count: sameKind.length,
-        verdict: { title: '归因结论', confidence: top.confidence, body: (top.evidence.join('；')) + (event.message ? ` — ${event.message.slice(0, 60)}` : ''), tags: top.tags },
+        verdict: fuseVerification({ title: '归因结论', confidence: top.confidence, body: (top.evidence.join('；')) + (event.message ? ` — ${event.message.slice(0, 60)}` : ''), tags: top.tags }, _v),
         evidenceSteps: buildErrSteps(event, top),
         code: buildErrCode(event),
         hypotheses: cands.map((c) => ({ label: c.kind.replace('error.', ''), prob: c.confidence })),
@@ -441,10 +697,26 @@
       const sameKind = evs.filter((e) => e.type === 'vital' && e.subType === signal);
       return {
         signal, eventId: event.eventId || (signal + '-live'), sub: cfg.label, time: event.timestamp, count: Math.max(1, sameKind.length),
-        verdict: { title: '根因判定', confidence: top.confidence, body: (top.evidence.join('；')) || `${cfg.label}=${fmtSig(signal, event.value)}`, tags: (top.tags && top.tags.length) ? top.tags : [{ label: top.kind, tone: 'bad' }] },
+        verdict: fuseVerification({ title: '根因判定', confidence: top.confidence, body: (top.evidence.join('；')) || `${cfg.label}=${fmtSig(signal, event.value)}`, tags: (top.tags && top.tags.length) ? top.tags : [{ label: top.kind, tone: 'bad' }] }, _v),
         evidenceSteps: buildVitalSteps(signal, event, top),
         code: buildVitalCode(signal, event),
         hypotheses: cands.map((c) => ({ label: c.kind.replace(signal + '.', ''), prob: c.confidence })),
+        impact: { users: 1, events: sameKind.length, recurrence: '7d' },
+        suggestedHealIds: top.suggestedHealIds,
+      };
+    }
+    if (signal === 'memory') {
+      const cands = memoryCandidates(event);
+      const top = cands[0] || { kind: 'memory.stable', confidence: 0.3, evidence: ['未匹配泄漏模式'], tags: [], suggestedHealIds: [] };
+      const cfg = SIGNALS.memory;
+      const evs = await allEvents();
+      const sameKind = evs.filter((e) => e.type === 'vital' && e.subType === 'memory');
+      return {
+        signal: 'memory', eventId: event.eventId || 'memory-live', sub: cfg.label, time: event.t || event.timestamp, count: Math.max(1, sameKind.length),
+        verdict: fuseVerification({ title: '泄漏判定', confidence: top.confidence, body: (top.evidence.join('；')) || '堆 ' + ((event.value || 0) / 1048576) + 'MB', tags: (top.tags && top.tags.length) ? top.tags : [{ label: top.kind, tone: 'bad' }] }, _v),
+        evidenceSteps: buildMemorySteps(event, top),
+        code: buildMemoryCode(event),
+        hypotheses: cands.map((c) => ({ label: c.kind.replace('memory.', ''), prob: c.confidence })),
         impact: { users: 1, events: sameKind.length, recurrence: '7d' },
         suggestedHealIds: top.suggestedHealIds,
       };
@@ -455,15 +727,31 @@
     const top = cands[0] || { kind: 'inp.unknown', confidence: 0.3, evidence: [], suggestedHealIds: [] };
     const events = await allEvents();
     const sameKind = events.filter(isInp);
+    const sameFp = sameKind.filter((e) => fingerprint(e) === fingerprint(event)).length; // 同 target+主导段 次数(×N)
     return {
-      signal: 'inp', eventId: event.eventId, sub: 'INP', time: event.timestamp, count: 1,
-      verdict: { title: '根因判定', confidence: top.confidence, body: (top.evidence.join('；')) || `INP=${event.value?.toFixed(0)}ms`, tags: inpTags(top, dom) },
+      signal: 'inp', eventId: event.eventId, sub: 'INP', time: event.timestamp, count: Math.max(1, sameFp),
+      verdict: fuseVerification({ title: '根因判定', confidence: top.confidence, body: (top.evidence.join('；')) || `INP=${event.value?.toFixed(0)}ms`, tags: inpTags(top, dom) }, _v),
       evidenceSteps: buildInpSteps(event, top, dom),
       code: buildInpCode(event),
       hypotheses: cands.map((c) => ({ label: c.kind.replace('inp.', ''), prob: c.confidence })),
       impact: { users: 1, events: sameKind.length, recurrence: '—' },
       suggestedHealIds: top.suggestedHealIds,
     };
+  }
+  // ③b②:AI 深诊结果写回 —— 读持久化的 ai-rca verdict 挂到根因结果上(切 tab/重渲染后仍可回显,不必重跑 LLM);
+  // grounding 未通过 → 轻降权 fusedConfidence(交叉分析信号,非硬否决)。
+  async function analyzeRootCause(signal, event, opts) {
+    const r = await _analyzeRootCauseRaw(signal, event, opts);
+    if (!r) return r;
+    const aiRca = (event && event.eventId) ? await getAiRca(event.eventId) : null;
+    if (aiRca) {
+      r.aiRca = aiRca;
+      if (aiRca.grounding && !aiRca.grounding.ok && r.verdict) {
+        r.verdict.fusedConfidence = (r.verdict.fusedConfidence != null ? r.verdict.fusedConfidence : r.verdict.confidence) * 0.9;
+        r.verdict.aiGrounding = 'ungrounded';
+      }
+    }
+    return r;
   }
   function buildErrSteps(ev, top) {
     const f = EDIAG()?.parseFrames(ev) || [];
@@ -558,6 +846,22 @@
     if (!out.length) push('unknown', 0.3, [`${cfg.label}=${fmtSig(signal, v)} 暂未匹配已知模式`], [{ label: 'unknown', tone: 'fg-3' }], []);
     return out.sort((a, b) => b.confidence - a.confidence);
   }
+  // memory 泄漏候选(对齐 vitalCandidates 结构):heap_growth / no_release_on_nav / dom_bloat / near_limit
+  function memoryCandidates(ev) {
+    const out = [];
+    const push = (kind, conf, evidence, tags, heal) => out.push({ kind: 'memory.' + kind, confidence: conf, evidence, tags, suggestedHealIds: heal });
+    const ratio = ev.ratio != null ? ev.ratio : 0;
+    const heapSlopeMB = ev.heapSlopeMB || 0;
+    const domSlope = ev.domSlope || 0;
+    if (ratio > 0.8) push('near_limit', Math.min(0.95, 0.7 + ratio * 0.3), ['堆占 limit ' + Math.round(ratio * 100) + '% 逼近上限', '可能 OOM / 频繁 GC 降速,需立即排查泄漏'], [{ label: 'near-limit', tone: 'bad' }], ['inject_cleanup']);
+    if (heapSlopeMB > 0.5) push('heap_growth', Math.min(0.92, 0.55 + heapSlopeMB / 10), ['堆单调增长 +' + heapSlopeMB.toFixed(1) + ' MB/min', '持续不回落 → 疑似 JS 堆泄漏(闭包/缓存/监听器累积)'], [{ label: 'heap-growth', tone: 'bad' }], ['inject_cleanup', 'clear_timers']);
+    if (ev.noRelease) push('no_release_on_nav', 0.78, ['路由切换后堆未回落(< 导航前 85%)', 'SPA 跨路由泄漏:组件卸载未清理订阅/定时器/引用'], [{ label: 'cross-route-leak', tone: 'warn' }], ['inject_cleanup', 'clear_timers']);
+    if (domSlope > 50 || ev.domCount > 5000) push('dom_bloat', Math.min(0.85, 0.5 + Math.min(domSlope, 200) / 300), ['DOM 节点 ' + (ev.domCount || 0) + '(+' + domSlope.toFixed(0) + '/min)', 'detached DOM 累积嫌疑:移除节点仍被 JS 引用'], [{ label: 'dom-bloat', tone: 'accent' }], ['weak_ref']);
+    // listener_leak 仅在 attach 精确模式(ev.listeners 来自 CDP JSEventListeners)才判 —— advisory 拿不到监听器数
+    if ((ev.listeners || 0) > 500) push('listener_leak', Math.min(0.85, 0.5 + Math.min(ev.listeners, 5000) / 10000), ['事件监听器 ' + ev.listeners + ' 个(CDP JSEventListeners 精确计数)', '累积未 removeEventListener / 组件卸载未清理 → 内存 + INP 双害'], [{ label: 'listener-leak', tone: 'warn' }], ['clear_timers', 'inject_cleanup']);
+    if (!out.length) push('stable', 0.3, ['堆使用平稳(' + ((ev.value || 0) / 1048576).toFixed(1) + 'MB,斜率 ' + heapSlopeMB.toFixed(2) + 'MB/min)', '暂未匹配泄漏模式'], [{ label: 'stable', tone: 'fg-3' }], []);
+    return out.sort((a, b) => b.confidence - a.confidence);
+  }
   function buildVitalSteps(signal, ev, top) {
     const cfg = SIGNALS[signal];
     const segs = cfg.segs(ev);
@@ -601,6 +905,23 @@
     ];
     return { file: 'CLS 定位锚点', line: 1, lines: rows.map((c, i) => ({ n: i + 1, code: c, hl: i === 0 })), annotation: `CLS ${(ev.value || 0).toFixed(2)} · 位移元素宜声明 width/height 或预留 min-height` };
   }
+  function buildMemorySteps(ev, top) {
+    return [
+      { text: 'performance.memory 采样:堆 ' + ((ev.value || 0) / 1048576).toFixed(1) + 'MB / limit ' + ((ev.limit || 0) / 1048576).toFixed(0) + 'MB(' + Math.round((ev.ratio || 0) * 100) + '%)' },
+      { text: '趋势分析:堆 ' + ((ev.heapSlopeMB || 0) > 0.05 ? '+' : '') + (ev.heapSlopeMB || 0).toFixed(2) + 'MB/min · DOM ' + ((ev.domSlope || 0) > 0 ? '+' : '') + (ev.domSlope || 0).toFixed(0) + '/min' + (ev.noRelease ? ' · 路由后未回落' : '') },
+      { text: '泄漏模式匹配 → ' + top.kind + '(confidence ' + (top.confidence * 100).toFixed(0) + '%)', good: top.confidence >= 0.6 },
+      { text: '注:扩展拿不到 GC / 堆快照,结论基于采样趋势推断(advisory)' },
+    ];
+  }
+  function buildMemoryCode(ev) {
+    const rows = [
+      '堆 used: ' + ((ev.value || 0) / 1048576).toFixed(1) + 'MB / limit ' + ((ev.limit || 0) / 1048576).toFixed(0) + 'MB',
+      '堆斜率: ' + (ev.heapSlopeMB || 0).toFixed(2) + ' MB/min',
+      'DOM 节点: ' + (ev.domCount || 0) + '(' + (ev.domSlope || 0).toFixed(0) + '/min)',
+      '路由后回落: ' + (ev.noRelease ? '否(嫌疑)' : '是/无导航'),
+    ];
+    return { file: '内存泄漏锚点', line: 1, lines: rows.map((c, i) => ({ n: i + 1, code: c, hl: i === 0 })), annotation: (ev.leakSuspect || '平稳') + ' · 扩展无堆快照能力,精确引用链需 DevTools Memory panel 取堆快照 diff' };
+  }
 
   function inpTags(top, dom) {
     const t = [{ label: top.kind.replace('inp.', ''), tone: 'bad' }];
@@ -634,5 +955,5 @@
   function parseUA(ua) { if (/iphone|ipad|ios/i.test(ua)) return 'iOS Safari'; if (/android/i.test(ua)) return 'Android Chrome'; if (/mac/i.test(ua)) return 'macOS'; if (/win/i.test(ua)) return 'Windows'; return 'Desktop'; }
   function proxyAttr(t) { if (!t) return ''; const s = String(t); return /[.#\[]/.test(s) ? `<${s.split(/[.#\[]/)[0]}> · ${s}` : `<${s}>`; }
 
-  global.__data = { loadRealtime, loadVital, loadErrorOverview, analyzeRootCause, loadHistory, count, allEvents, putEvent, pruneOldEvents, clearEventsCache, groupErrors, rating, rateSig, fmtSig, pct, SIGNALS, vitalCandidates };
+  global.__data = { loadRealtime, loadVital, loadMemory, loadErrorOverview, analyzeRootCause, loadHistory, count, allEvents, putEvent, pruneOldEvents, clearEventsCache, groupErrors, groupInp, fingerprint, rating, rateSig, fmtSig, pct, SIGNALS, vitalCandidates, memoryCandidates, linearSlope, recordFeedback, getFeedback, countFeedback, recordHeal, getHeals, recordVerification, getVerification, recordAiRca, getAiRca, fuseVerification, saveSession, loadSessions, buildCrossSignalChain, buildScene, importScene, setHostScope, getHostScope };
 })(typeof globalThis !== 'undefined' ? globalThis : self);
