@@ -1,0 +1,22 @@
+{
+  "name": "@monit/vc-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP bridge: Vitals Copilot 扩展 findings → Claude Code → 真实仓库 dry-run apply(M1: 写工作树,无 token/无 push)",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "vc-mcp": "./dist/index.js" },
+  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@monit/contracts": "workspace:*",
+    "@monit/server-kit": "workspace:*"
+  }
+}
